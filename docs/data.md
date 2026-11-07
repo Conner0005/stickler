@@ -51,14 +51,33 @@ Caveats found while checking:
 
 ## Data-quality filter (`validate.data_quality`, default on)
 For each candidate with a **measured** pC20, the pC20-check error is e = γ_model(C20) − (γ0 − 20 mN/m),
-where the model uses the candidate's own CMC, γ_CMC and Γ_max. The robust scale is
-s = 1.4826·MAD(e) over all such candidates. If |e| > 3·s (`config.QC_MAD_THRESHOLD`), the
-candidate is flagged **inconsistent source data** and excluded from optimisation, with the
-reason shown. Turn this off with `config.EXCLUDE_INCONSISTENT` or `wetopt optimise --include-inconsistent`.
-Candidates without a measured pC20 are **unchecked** and are not excluded.
-Current library: 28 checked, s = 0.58 mN/m, 3·s = 1.7 mN/m. The 5 flagged are C14H29NaO5S #1 (+16.0),
-C43H96O19SSi4 #1 (−6.6), C12H25NaO4S #1 (SDS, −3.9), C26H60O9SSi3 (−3.4) and C23H44O7S (−2.2 mN/m).
-Caveat: many SurfPro pC20 values are `calculated` from isotherm fits, which makes errors cluster
-near zero, so s is small and the 3·s cut is strict. σ_model still uses the RMSE over all 28 (3.5 mN/m).
+where the model uses the candidate's own CMC, γ_CMC and Γ_max. If |e| > 3·σ_model
+(`config.QC_SIGMA_MULT`; 10.5 mN/m with σ_model = 3.5 mN/m), the candidate is flagged
+**inconsistent source data** and excluded from optimisation, with the reason shown. Turn this off
+with `config.EXCLUDE_INCONSISTENT` or `wetopt optimise --include-inconsistent`. Candidates without a
+measured pC20 are **unchecked** and are not excluded.
+The cut uses σ_model, not the spread of e: many SurfPro pC20 values come from the same isotherm
+fits as CMC and γ_CMC, so their spread (1.4826·MAD = 0.6 mN/m) is not an independent error scale.
+The filter catches gross data errors, not normal model error. Current library: 28 checked, 1 flagged
+(C14H29NaO5S #1, +16.0 mN/m).
+
+## Regulatory flags (`data/regulations.yaml`, `regulatory.py`)
+This is a hardcoded snapshot (as_of 2026-11-07) and **not legal advice**; the disclaimer in the
+YAML is shown wherever flags appear. Each ingredient is classified by listed CAS and by RDKit
+structure, never by name:
+- nonylphenol/octylphenol family: a benzene ring with a phenol O or an O–(CH2CH2O)n ether, plus an acyclic alkyl substituent of exactly 9/8 C.
+- tallow amine ethoxylate: a pattern match only, to be confirmed by CAS.
+- PFAS (OECD 2021), PFOS/PFHxS (C8/C6 sulfonate), PFOA (C7F15COO) and long-chain PFCAs (CnF2n+1COO, 8 ≤ n ≤ 20, as defined in Stockholm decision SC-12/12).
+
+`Constraints.markets` (EU, GB, US, Global) and `policy` (exclude | warn): with exclude, anything
+not_permitted, restricted or eliminated in a selected market is removed before the search;
+'check' only warns.
+Rule hits: 0 of the 40 library candidates. Of the 528 SurfPro surfactants (default types,
+20–30 °C) the hits are EU Annex III 18, REACH Annex XVII entry 46 3, GB 18, PFOS 1, PFOA 4,
+PFHxS 0, LC-PFCA 1, US PFAS check 39.
+**Known gap:** the library holds three nonylphenol *propoxylate* sulfates (C24H41NaO7S,
+C33H59NaO10S, C42H77NaO13S). The nonylphenol rule as specified requires an (CH2CH2O)n chain or a
+free phenol, so they are not flagged. Check whether Annex III entries 56–81 cover them before
+using them.
 
 Names: `CnEm` for linear alcohol ethoxylates, otherwise the molecular formula, with ` #k` added when isomers share a formula. SurfPro has no common names.

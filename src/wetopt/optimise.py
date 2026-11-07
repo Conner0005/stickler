@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
 
-from wetopt import config
+from wetopt import config, regulatory
 from wetopt.physics import (
     DSTStats,
     SurfactantArrays,
@@ -58,19 +58,29 @@ class Problem:
     max_k: int
     sigma_model: float  # N/m
     n_draws: int
+    allowed: np.ndarray  # indices of searchable candidates (arrays above span the whole library)
 
 
 def make_problem(
-    lib: pd.DataFrame, spec: Spec, cons: Constraints, sigma_model: float, n_draws: int = 200
+    lib: pd.DataFrame,
+    spec: Spec,
+    cons: Constraints,
+    sigma_model: float,
+    n_draws: int = 200,
+    drop: frozenset[str] = frozenset(),
 ) -> tuple[Problem, pd.DataFrame]:
-    """Filter candidates by the constraints and precompute nominal model inputs."""
-    ex = set(cons.excluded_ids)
+    """Precompute nominal model inputs for the whole library; search only allowed candidates.
+
+    Arrays span the whole library so each surfactant keeps the same Monte Carlo draws whatever
+    is excluded (by allowed_classes, excluded_ids or ``drop`` names).
+    """
+    ex = set(cons.excluded_ids) | set(drop)
     keep = (
         lib["ionic_class"].isin(cons.allowed_classes)
         & ~lib["name"].isin(ex)
         & ~lib["inchikey"].isin(ex)
-    )
-    lib = lib[keep].reset_index(drop=True)
+    ).to_numpy()
+    lib = lib.reset_index(drop=True)
     props = SurfactantArrays.from_library(lib)
     g0 = float(gamma_water())
     band_ages = [b.surface_age_s if b.metric == "dst" else np.inf for b in spec.bands]
@@ -92,15 +102,16 @@ def make_problem(
         max_k=cons.max_k,
         sigma_model=sigma_model,
         n_draws=n_draws,
+        allowed=np.flatnonzero(keep),
     )
-    return problem, lib
+    return problem, lib[keep]
 
 
 def subsets(p: Problem, k: int) -> np.ndarray:
     """All k-subsets of candidates, skipping anionic + cationic pairs; shape (n, k)."""
     rows = [
         c
-        for c in itertools.combinations(range(len(p.names)), k)
+        for c in itertools.combinations(p.allowed, k)
         if not {"anionic", "cationic"} <= {p.ionic[i] for i in c}
     ]
     return np.array(rows, dtype=int).reshape(-1, k)
@@ -396,6 +407,8 @@ class Outcome:
     levels: list[dict] = field(default_factory=list)
     runtime_s: float = 0.0
     excluded: pd.DataFrame = field(default_factory=pd.DataFrame)  # name, reason
+    regulatory_removed: list[str] = field(default_factory=list)
+    regulatory_note: str = ""  # disclaimer + snapshot date; show wherever flags appear
 
 
 def optimise(
@@ -416,12 +429,19 @@ def optimise(
     check = pc20_check(lib)
     if sigma_model is None:
         sigma_model = max(config.SIGMA_MODEL, check.rmse) if check.n else config.SIGMA_MODEL
-    qc = data_quality(lib)
+    qc = data_quality(lib, config.QC_SIGMA_MULT * sigma_model)
     excluded = qc.loc[qc["status"] == INCONSISTENT, ["name", "reason"]]
     if not exclude_inconsistent:
         excluded = excluded.iloc[:0]
-    lib = lib[~lib["name"].isin(excluded["name"])]
-    p, cands = make_problem(lib, spec, cons, sigma_model, n_draws)
+    regs = regulatory.load()
+    screened = regulatory.screen(lib, list(cons.markets), regs)
+    blocking = screened["blocking"].map(bool)
+    blocked = screened[blocking] if cons.policy == "exclude" else screened.iloc[:0]
+    removed = regulatory.removal_summary(blocked, list(cons.markets))
+    note = f"Regulatory snapshot as of {regs.as_of}. {regs.disclaimer}"
+    reg_flags = dict(zip(screened["name"], screened["flags"], strict=True))
+    drop = frozenset(excluded["name"]) | frozenset(blocked["name"])
+    p, cands = make_problem(lib, spec, cons, sigma_model, n_draws, drop)
     levels: list[Level] = []
     winner_level = None
     for k in range(1, p.max_k + 1):
@@ -469,6 +489,8 @@ def optimise(
             summaries,
             runtime,
             excluded,
+            removed,
+            note,
         )
 
     lv, k = winner_level, winner_level.k
@@ -501,6 +523,9 @@ def optimise(
         predictions=preds,
         margins=[float(m) for m in lv.pess[w]],
         certificate=text,
+        regulatory_flags={name: [f.text() for f in reg_flags[name]] for name in blend},
+        regulatory_removed=removed,
+        regulatory_note=note,
     )
     return Outcome(
         result,
@@ -513,4 +538,6 @@ def optimise(
         summaries,
         time.perf_counter() - t0,
         excluded,
+        removed,
+        note,
     )

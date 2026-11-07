@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, PositiveFloat, RootModel, model_validator
 
 IonicClass = Literal["anionic", "cationic", "nonionic", "zwitterionic"]
 Metric = Literal["dst", "gamma_eq"]
+Market = Literal["EU", "GB", "US", "Global"]
 
 
 class Quantity(BaseModel):
@@ -99,6 +100,10 @@ class Constraints(BaseModel):
     max_total_wv: float = Field(gt=0, description="cap on total surfactant, % w/v")
     allowed_classes: list[IonicClass] = list(get_args(IonicClass))
     excluded_ids: list[str] = []
+    markets: list[Market] = list(get_args(Market))
+    policy: Literal["exclude", "warn"] = Field(
+        "exclude", description="exclude: drop not_permitted/restricted/eliminated; warn: flag only"
+    )
 
 
 class Blend(RootModel[dict[str, PositiveFloat]]):
@@ -121,6 +126,9 @@ class Result(BaseModel):
     predictions: list[Prediction]
     margins: list[float] = Field(description="robust margin per prediction, N/m; ≥ 0 = band met")
     certificate: str
+    regulatory_flags: dict[str, list[str]] = {}  # ingredient id -> flag texts
+    regulatory_removed: list[str] = []  # e.g. '3 candidates excluded for EU: ...'
+    regulatory_note: str = ""  # disclaimer; required wherever flags are shown
 
     @model_validator(mode="after")
     def _consistent(self) -> Self:

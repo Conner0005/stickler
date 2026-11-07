@@ -53,17 +53,23 @@ def pc20_errors(sub: pd.DataFrame, T: float = T0) -> np.ndarray:
 INCONSISTENT = "inconsistent source data"
 
 
-def data_quality(
-    lib: pd.DataFrame, threshold: float = config.QC_MAD_THRESHOLD, T: float = T0
-) -> pd.DataFrame:
+def sigma_model(lib: pd.DataFrame) -> float:
+    """σ_model (N/m) = max(config.SIGMA_MODEL, pC20-check RMSE), or the config value if none."""
+    check = pc20_check(lib)
+    return max(config.SIGMA_MODEL, check.rmse) if check.n else config.SIGMA_MODEL
+
+
+def data_quality(lib: pd.DataFrame, limit: float | None = None, T: float = T0) -> pd.DataFrame:
     """Per-candidate QC status: 'consistent', INCONSISTENT or 'unchecked', with a reason.
 
-    For candidates with a measured pC20, e_i = pc20_errors; robust scale
-    s = 1.4826·MAD = 1.4826·median|e − median(e)|; |e_i| > threshold·s → INCONSISTENT (the
-    measured pC20 disagrees with the candidate's own CMC, γ_CMC and Γ_max under the isotherm).
-    Candidates without a measured pC20 are 'unchecked' and are not excluded.
-    Ref: Rousseeuw & Croux, J. Am. Stat. Assoc. 88, 1273 (1993) (MAD scale).
+    For candidates with a measured pC20, e_i = pc20_errors (the measured pC20 against the
+    candidate's own CMC, γ_CMC and Γ_max under the isotherm). |e_i| > limit → INCONSISTENT,
+    where limit defaults to config.QC_SIGMA_MULT · σ_model. Candidates without a measured pC20
+    are 'unchecked' and are not excluded.
+    Ref: see pc20_check.
     """
+    if limit is None:
+        limit = config.QC_SIGMA_MULT * sigma_model(lib)
     out = pd.DataFrame(
         {
             "name": lib["name"],
@@ -76,13 +82,12 @@ def data_quality(
     if not checked.any():
         return out
     e = pc20_errors(lib[checked], T)
-    s = 1.4826 * np.median(np.abs(e - np.median(e)))
-    bad = np.abs(e) > threshold * s
-    limit = f"{threshold:g}·s = {threshold * s * 1e3:.1f} mN/m"
+    bad = np.abs(e) > limit
+    lim = f"{config.QC_SIGMA_MULT:g}·σ_model = {limit * 1e3:.1f} mN/m"
     out.loc[checked, "pc20_error"] = e
     out.loc[checked, "status"] = np.where(bad, INCONSISTENT, "consistent")
     out.loc[checked, "reason"] = [
-        f"pC20-check error {x * 1e3:+.1f} mN/m {'>' if b else '≤'} {limit} in magnitude"
+        f"pC20-check error {x * 1e3:+.1f} mN/m, |error| {'>' if b else '≤'} {lim}"
         for x, b in zip(e, bad, strict=True)
     ]
     return out

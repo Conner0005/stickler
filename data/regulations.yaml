@@ -1,0 +1,118 @@
+# Hardcoded regulatory snapshot for co-formulant screening (src/wetopt/regulatory.py).
+# Rules as supplied in the project brief; the long-chain PFCA definition was checked against
+# Stockholm Convention decision SC-12/12: "CnF2n+1COOH (where 8 <= n <= 20)", i.e. 9-21 total
+# carbons, with PFOA, its salts and PFOA-related compounds excluded from the LC-PFCA entry.
+as_of: 2026-11-07
+disclaimer: >-
+  Hardcoded snapshot for a hackathon demo, not legal advice. No flag does not mean approved:
+  EU/GB co-formulants need REACH registration and product authorisation, and every US inert
+  must be on EPA's approved list (check InertFinder).
+
+class_labels:
+  tallow_amine_ethoxylate: tallow amine ethoxylates (POE-tallowamine)
+  nonylphenol_family: nonylphenol and its ethoxylates
+  octylphenol_family: octylphenol and its ethoxylates
+  pfos: PFOS, its salts
+  pfoa: PFOA, its salts
+  pfhxs: PFHxS, its salts
+  lc_pfca: long-chain PFCAs (C9-C21), their salts
+  pfas_any: PFAS (OECD 2021 definition)
+
+# Class of each CAS number listed in the rules (classification by CAS when known).
+cas_classes:
+  61791-26-2: tallow_amine_ethoxylate
+  68213-26-3: tallow_amine_ethoxylate
+  25154-52-3: nonylphenol_family
+  84852-15-3: nonylphenol_family
+  104-40-5: nonylphenol_family
+  9016-45-9: nonylphenol_family
+  26027-38-3: nonylphenol_family
+  127087-87-0: nonylphenol_family
+  37205-87-1: nonylphenol_family
+  140-66-9: octylphenol_family
+  1806-26-4: octylphenol_family
+  9036-19-5: octylphenol_family
+  9002-93-1: octylphenol_family
+  9004-87-9: octylphenol_family
+  68987-90-6: octylphenol_family
+  1763-23-1: pfos
+  2795-39-3: pfos
+  335-67-1: pfoa
+  3825-26-1: pfoa
+  355-46-4: pfhxs
+
+annex3_classes: &annex3_classes [tallow_amine_ethoxylate, nonylphenol_family, octylphenol_family]
+annex3_cas: &annex3_cas
+  [61791-26-2, 68213-26-3, 25154-52-3, 84852-15-3, 104-40-5, 9016-45-9, 26027-38-3, 127087-87-0,
+   37205-87-1, 140-66-9, 1806-26-4, 9036-19-5, 9002-93-1, 9004-87-9, 68987-90-6]
+
+rules:
+  - id: eu_annex3
+    region: EU
+    status: not_permitted
+    rule: >-
+      Unacceptable co-formulant, Reg. (EC) 1107/2009 Annex III as amended by Reg. (EU) 2021/383
+      (entries 11-12 tallow amine ethoxylates, 56-81 nonylphenol family, 82-139 octylphenol
+      family); tolerated only as an unintentional impurity <= 0.1% w/w
+    classes: *annex3_classes
+    cas: *annex3_cas
+    source: https://eur-lex.europa.eu/eli/reg/2021/383/oj/eng
+  - id: eu_reach_xvii_46
+    region: EU
+    status: restricted
+    rule: >-
+      REACH Annex XVII entry 46: nonylphenol and its ethoxylates not allowed as co-formulants
+      in pesticides (>= 0.1% w/w)
+    classes: [nonylphenol_family]
+    cas: []
+    source: https://echa.europa.eu/documents/10162/e5842a1e-e9f9-6096-2829-72f71c00eaab
+  - id: gb_unacceptable
+    region: GB
+    status: not_permitted
+    rule: >-
+      HSE Register of unacceptable co-formulants (in force 24 Mar 2023, populated with the
+      Reg. (EU) 2021/383 list)
+    classes: *annex3_classes
+    cas: *annex3_cas
+    source: https://www.hse.gov.uk/pesticides/active-substances/unacceptable-co-formulants.htm
+  - id: pops_pfos
+    region: Global
+    region_label: Global (Stockholm Convention parties)
+    status: restricted
+    rule: "PFOS, its salts and PFOSF: Annex B"
+    classes: [pfos]
+    cas: [1763-23-1, 2795-39-3]
+    source: https://chm.pops.int/TheConvention/ThePOPs/TheNewPOPs
+  - id: pops_pfoa
+    region: Global
+    region_label: Global (Stockholm Convention parties)
+    status: eliminated
+    rule: "PFOA, its salts and related compounds: Annex A (2019, specific exemptions)"
+    classes: [pfoa]
+    cas: [335-67-1, 3825-26-1]
+    source: https://chm.pops.int/TheConvention/ThePOPs/TheNewPOPs
+  - id: pops_pfhxs
+    region: Global
+    region_label: Global (Stockholm Convention parties)
+    status: eliminated
+    rule: "PFHxS, its salts and related compounds: Annex A (2022, no exemptions)"
+    classes: [pfhxs]
+    cas: [355-46-4]
+    source: https://chm.pops.int/TheConvention/ThePOPs/TheNewPOPs
+  - id: pops_lc_pfca
+    region: Global
+    region_label: Global (Stockholm Convention parties)
+    status: eliminated
+    rule: "Long-chain PFCAs, salts and related compounds: Annex A (2025, decision SC-12/12)"
+    classes: [lc_pfca]
+    cas: []
+    source: https://chm.pops.int/Implementation/IndustrialPOPs/PFAS/Overview/tabid/5221/Default.aspx
+  - id: us_pfas_inerts
+    region: US
+    status: check
+    rule: >-
+      EPA removed 12 PFAS from its approved inert-ingredient list (Dec 2022) and another in
+      Feb 2024; any PFAS inert needs EPA review
+    classes: [pfas_any]
+    cas: []
+    source: https://www.federalregister.gov/documents/2022/12/14/2022-27085/pesticides-removal-of-pfas-chemicals-from-approved-inert-ingredient-list-for-pesticide-products

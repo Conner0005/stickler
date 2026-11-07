@@ -83,9 +83,15 @@ def optimise(
     include_inconsistent: Annotated[
         bool, typer.Option(help="Keep candidates flagged 'inconsistent source data'.")
     ] = not config.EXCLUDE_INCONSISTENT,
+    markets: Annotated[
+        str | None,
+        typer.Option(help="Override constraints.markets, e.g. 'EU' or 'EU,GB,US,Global'."),
+    ] = None,
 ) -> None:
     """Fewest-surfactant blend for a spec, top feasible blends, and the k − 1 certificate."""
     data = yaml.safe_load(spec_path.read_text())
+    if markets is not None:
+        data["constraints"]["markets"] = [m.strip() for m in markets.split(",") if m.strip()]
     spec, cons = Spec.model_validate(data["spec"]), Constraints.model_validate(data["constraints"])
     lib = pd.read_parquet(library)
     o = opt.optimise(lib, spec, cons, exclude_inconsistent=not include_inconsistent)
@@ -104,6 +110,11 @@ def optimise(
         console.print(f"[yellow]Excluded[/] {row.name}: inconsistent source data ({row.reason})")
     if not len(o.excluded):
         console.print("No candidates excluded for data quality.")
+    console.print(
+        f"Regulatory screen: markets {', '.join(cons.markets) or 'none'}, policy {cons.policy}"
+    )
+    for line in o.regulatory_removed or ["No candidates excluded for regulatory reasons."]:
+        console.print(f"  {line}")
     levels = Table(title="Search by k")
     for c in ["k", "grid blends", "classified (MC)", "feasible", "failed", "undetermined"]:
         levels.add_column(c, justify="right")
@@ -128,6 +139,9 @@ def optimise(
             lo, hi, sd = o.feasible.iloc[0][opt.band_label(pred.band)]
             bracket = f"{lo * 1e3:.1f}–{hi * 1e3:.1f} ± {sd * 1e3:.1f} mN/m"
             console.print(f"  {opt.band_label(pred.band)}: {bracket}, margin {m * 1e3:+.1f} mN/m")
+        for name, fl in r.regulatory_flags.items():
+            for f in fl:
+                console.print(f"  [yellow]Flag[/] {name}: {f}")
         top = Table(title="Top feasible blends (best per surfactant set)")
         for c in ["#", "blend", "% w/v", "total % w/v", "worst margin / mN/m"]:
             top.add_column(c, justify="left" if c == "blend" else "right")
@@ -155,6 +169,7 @@ def optimise(
             )
         console.print(und)
 
+    console.print(f"[dim]{o.regulatory_note}[/]")
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f"{spec_path.stem}.json"
     payload = {
@@ -170,6 +185,8 @@ def optimise(
         "top_feasible": o.feasible.head(10).to_dict("records"),
         "undetermined": o.undetermined.head(50).to_dict("records"),
         "excluded": o.excluded.to_dict("records"),
+        "regulatory_removed": o.regulatory_removed,
+        "regulatory_note": o.regulatory_note,
         "runtime_s": o.runtime_s,
     }
     out.write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=_json_default))

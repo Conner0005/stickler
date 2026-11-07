@@ -38,8 +38,10 @@ N_GIBBS = {"nonionic": 1, "zwitterionic": 1, "anionic": 2, "cationic": 2}
 D_CLASS_DEFAULT = {"siloxane": 3e-10}
 D_DEFAULT = 4e-10
 
-# Data-quality filter (validate.data_quality): a candidate whose pC20-check error exceeds
-# QC_MAD_THRESHOLD robust SDs (1.4826·MAD over all measured-pC20 candidates) is flagged
-# 'inconsistent source data' and excluded from optimisation unless toggled off.
-QC_MAD_THRESHOLD = 3.0
+# Data-quality filter (validate.data_quality): a candidate whose |pC20-check error| exceeds
+# QC_SIGMA_MULT · σ_model is flagged 'inconsistent source data' and excluded from optimisation
+# unless toggled off. Uses σ_model, not the MAD of the errors: many SurfPro pC20 values come
+# from the same isotherm fits as CMC and γ_CMC, so their spread is not an independent error
+# scale. The filter targets gross data errors, not normal model error.
+QC_SIGMA_MULT = 3.0
 EXCLUDE_INCONSISTENT = True

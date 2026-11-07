@@ -31,7 +31,8 @@ def test_data_quality_flags_outliers_not_unchecked():
     lib = pd.read_parquet(config.LIBRARY_PATH)
     qc = data_quality(lib)
     status = dict(zip(qc["name"], qc["status"], strict=True))
-    assert status["C14H29NaO5S #1"] == INCONSISTENT  # pC20-check error +16 mN/m
+    assert status["C14H29NaO5S #1"] == INCONSISTENT  # pC20-check error +16 mN/m > 10.5
+    assert status["C12H25NaO4S #1"] == "consistent"  # SDS, −3.9 mN/m: within model error
     unchecked = ~lib["pc20_measured"]
     assert (qc.loc[unchecked.to_numpy(), "status"] == "unchecked").all()
     assert set(qc["status"]) <= {"consistent", INCONSISTENT, "unchecked"}
