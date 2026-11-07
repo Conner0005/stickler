@@ -13,3 +13,6 @@ wheels/
 .pytest_cache/
 .ruff_cache/
 .DS_Store
+
+# Fetched third-party data (see docs/data.md)
+data/raw/surfpro/
