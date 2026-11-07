@@ -122,11 +122,12 @@ def test_cli_optimise(tmp_path):
 @pytest.mark.slow
 def test_runtime_40_candidates_k3():
     lib = pd.read_parquet(config.LIBRARY_PATH)
-    doc = yaml.safe_load((config.ROOT / "examples" / "cereal.yaml").read_text())
-    sp, cons = Spec.model_validate(doc["spec"]), Constraints.model_validate(doc["constraints"])
+    # Cereal band at the original 0.1 % w/v cap: infeasible, so every k is searched.
+    dst200 = {"metric": "dst", "surface_age_ms": 200, "lo": 0.0, "hi": 0.050}
+    sp, cons = spec(dst200), Constraints(max_k=3, max_total_wv=0.1)
     t0 = time.perf_counter()
     o = optimise(lib, sp, cons)
     runtime = time.perf_counter() - t0
     print(f"\n40 candidates, k ≤ 3, full search: {runtime:.1f} s; levels {o.levels}")
-    assert [lv["k"] for lv in o.levels] == [1, 2, 3]  # cereal at 0.1 % w/v searches every k
+    assert [lv["k"] for lv in o.levels] == [1, 2, 3]
     assert runtime < 60
