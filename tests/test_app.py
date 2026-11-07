@@ -15,4 +15,4 @@ def test_app_imports_and_cereal_headless():
     assert not at.exception
     outcome = at.session_state["run"]["o"]
     assert outcome.result is not None and outcome.result.k == 1
-    assert any("water alone" in el.value for el in at.success)
+    assert any("water alone" in m.value for m in at.markdown)

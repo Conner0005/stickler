@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 168 36" role="img" aria-label="Stickler">
+  <path d="M14 4c4.6 6.1 9 11.1 9 16.3A9 9 0 0 1 5 20.3C5 15.1 9.4 10.1 14 4z" fill="#2A78D6"/>
+  <path d="M3 30.5c5.5-3.6 16.5-3.6 22 0" stroke="#2E6A4C" stroke-width="3" fill="none" stroke-linecap="round"/>
+  <text x="34" y="25" font-family="'Bricolage Grotesque','IBM Plex Sans',system-ui,sans-serif" font-size="22" font-weight="800" letter-spacing="-0.6" fill="#12261E">Stickler</text>
+</svg>
