@@ -18,3 +18,13 @@ MEASURED_SIGMA = {"pCMC": 0.05, "AW_ST_CMC": 1.0, "Gamma_max": 0.3, "pC20": 0.1}
 # PENDING: the paper could not be fetched (publisher blocks automated access).
 # While None, imputed σ falls back to the per-entry ensemble std in surfpro_imputed.csv.
 SURFPRO_TEST_RMSE: dict[str, float] | None = None
+
+# Gibbs prefactor n in γ = γ0 − nRTΓ∞·ln(1 + Kc), by schema ionic class:
+# 1 for neutral species, 2 for 1:1 ionic surfactants without added salt.
+N_GIBBS = {"nonionic": 1, "zwitterionic": 1, "anionic": 2, "cationic": 2}
+
+# ASSUMPTION: monomer diffusion coefficient (m²/s) used when Le Bas has no increment for an
+# atom (e.g. Si), so Wilke–Chang cannot be applied. Order of magnitude of Wilke–Chang values
+# for surfactants of molar mass ~0.5–2 kg/mol; not measured data.
+D_CLASS_DEFAULT = {"siloxane": 3e-10}
+D_DEFAULT = 4e-10
