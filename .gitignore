@@ -19,3 +19,7 @@ data/raw/surfpro/
 
 # Optimiser outputs
 results/
+
+# Local secrets
+.env
+.env.*
