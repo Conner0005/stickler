@@ -1,15 +1,20 @@
 """wetopt command line. Converts SI to display units (mM, mN/m, µmol/m²) only here."""
 
+import json
 from pathlib import Path
 from typing import Annotated
 
+import numpy as np
 import pandas as pd
 import typer
+import yaml
 from rich.console import Console
 from rich.table import Table
 
 from wetopt import config
+from wetopt import optimise as opt
 from wetopt.library import build_library, load_surfpro, select_candidates
+from wetopt.schema import Constraints, Spec
 
 app = typer.Typer(no_args_is_help=True)
 console = Console()
@@ -58,3 +63,102 @@ def library(
         )
     console.print(table)
     console.print("M = measured (SurfPro literature), I = imputed (SurfPro GNN ensemble)")
+
+
+def _json_default(x):
+    return x.item() if isinstance(x, np.generic) else str(x)
+
+
+@app.command()
+def optimise(
+    spec_path: Annotated[Path, typer.Argument(help="YAML with `spec` and `constraints`.")],
+    library: Annotated[Path, typer.Option(help="Candidate library parquet.")] = config.LIBRARY_PATH,
+    out_dir: Annotated[Path, typer.Option(help="Where to write <spec>.json.")] = (
+        config.ROOT / "results"
+    ),
+) -> None:
+    """Fewest-surfactant blend for a spec, top feasible blends, and the k − 1 certificate."""
+    data = yaml.safe_load(spec_path.read_text())
+    spec, cons = Spec.model_validate(data["spec"]), Constraints.model_validate(data["constraints"])
+    lib = pd.read_parquet(library)
+    o = opt.optimise(lib, spec, cons)
+
+    console.rule(f"wetopt optimise · {spec_path.name}")
+    bands = " · ".join(opt.band_label(b) for b in spec.bands)
+    pc = o.pc20
+    pc_text = f"pC20 check n = {pc['n']}" + (
+        f", RMSE {pc['rmse_mN_m']:.1f} mN/m" if pc["rmse_mN_m"] is not None else ""
+    )
+    console.print(
+        f"Spec: {bands} · z = {spec.z:g} · total ≤ {cons.max_total_wv:g}% w/v · k ≤ {cons.max_k}"
+    )
+    console.print(f"σ_model = {o.sigma_model * 1e3:.1f} mN/m ({pc_text})")
+    levels = Table(title="Search by k")
+    for c in ["k", "grid blends", "classified (MC)", "feasible", "failed", "undetermined"]:
+        levels.add_column(c, justify="right")
+    for lv in o.levels:
+        levels.add_row(
+            *(
+                str(lv[c])
+                for c in ["k", "grid_blends", "classified", "feasible", "failed", "undetermined"]
+            )
+        )
+    console.print(levels)
+
+    if o.result is not None:
+        r = o.result
+        parts = []
+        for name, c in r.blend.root.items():
+            wv = o.feasible.iloc[0]["wv"][list(r.blend.root).index(name)]
+            parts.append(f"{name} {wv:.3g}% w/v ({c:.3g} mM)")
+        console.print(f"[bold green]Winner (k = {r.k}):[/] " + " + ".join(parts))
+        console.print(f"  total {o.feasible.iloc[0]['total_wv']:.3g}% w/v")
+        for pred, m in zip(r.predictions, r.margins, strict=True):
+            lo, hi, sd = o.feasible.iloc[0][opt.band_label(pred.band)]
+            bracket = f"{lo * 1e3:.1f}–{hi * 1e3:.1f} ± {sd * 1e3:.1f} mN/m"
+            console.print(f"  {opt.band_label(pred.band)}: {bracket}, margin {m * 1e3:+.1f} mN/m")
+        top = Table(title="Top feasible blends (best per surfactant set)")
+        for c in ["#", "blend", "% w/v", "total % w/v", "worst margin / mN/m"]:
+            top.add_column(c, justify="left" if c == "blend" else "right")
+        for i, row in enumerate(o.feasible.head(10).itertuples(), 1):
+            wv = " + ".join(f"{w:.3g}" for w in row.wv)
+            top.add_row(
+                str(i), row.blend, wv, f"{row.total_wv:.3g}", f"{row.worst_margin * 1e3:+.1f}"
+            )
+        console.print(top)
+    else:
+        console.print("[bold red]No feasible blend.[/]")
+
+    style = "green" if o.certified else "yellow"
+    console.print(f"[bold {style}]Certificate:[/] {o.certificate}")
+    if len(o.undetermined):
+        und = Table(title="Undetermined, worth testing in the lab (nearest to feasible first)")
+        for c in ["blend", "% w/v", "optimistic margin / mN/m", "pessimistic margin / mN/m"]:
+            und.add_column(c, justify="left" if c == "blend" else "right")
+        for row in o.undetermined.head(10).itertuples():
+            und.add_row(
+                row.blend,
+                " + ".join(f"{w:.3g}" for w in row.wv),
+                f"{row.worst_optimistic * 1e3:+.1f}",
+                f"{row.worst_margin * 1e3:+.1f}",
+            )
+        console.print(und)
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / f"{spec_path.stem}.json"
+    payload = {
+        "spec_file": str(spec_path),
+        "spec": spec.model_dump(),
+        "constraints": cons.model_dump(),
+        "sigma_model_N_m": o.sigma_model,
+        "pc20_check": o.pc20,
+        "levels": o.levels,
+        "result": o.result.model_dump() if o.result else None,
+        "certified": o.certified,
+        "certificate": o.certificate,
+        "top_feasible": o.feasible.head(10).to_dict("records"),
+        "undetermined": o.undetermined.head(50).to_dict("records"),
+        "runtime_s": o.runtime_s,
+    }
+    out.write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=_json_default))
+    console.print(f"{o.runtime_s:.1f} s · wrote {out}")

@@ -16,3 +16,6 @@ wheels/
 
 # Fetched third-party data (see docs/data.md)
 data/raw/surfpro/
+
+# Optimiser outputs
+results/

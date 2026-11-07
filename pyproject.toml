@@ -38,3 +38,5 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["slow: full-library benchmarks (run with -m slow -s)"]
+addopts = "-m 'not slow'"
