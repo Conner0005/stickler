@@ -172,22 +172,6 @@ def optimise(
     console.print(f"[dim]{o.regulatory_note}[/]")
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f"{spec_path.stem}.json"
-    payload = {
-        "spec_file": str(spec_path),
-        "spec": spec.model_dump(),
-        "constraints": cons.model_dump(),
-        "sigma_model_N_m": o.sigma_model,
-        "pc20_check": o.pc20,
-        "levels": o.levels,
-        "result": o.result.model_dump() if o.result else None,
-        "certified": o.certified,
-        "certificate": o.certificate,
-        "top_feasible": o.feasible.head(10).to_dict("records"),
-        "undetermined": o.undetermined.head(50).to_dict("records"),
-        "excluded": o.excluded.to_dict("records"),
-        "regulatory_removed": o.regulatory_removed,
-        "regulatory_note": o.regulatory_note,
-        "runtime_s": o.runtime_s,
-    }
+    payload = opt.outcome_payload(o, spec, cons, str(spec_path))
     out.write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=_json_default))
     console.print(f"{o.runtime_s:.1f} s · wrote {out}")

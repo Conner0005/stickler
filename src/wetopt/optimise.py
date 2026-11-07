@@ -12,6 +12,7 @@ No monotonicity is assumed: γ can rise with concentration above the mixed CMC.
 
 import itertools
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -326,22 +327,31 @@ def _water_certificate(p: Problem) -> str:
     )
 
 
-def certificate(p: Problem, prev: Level | None, k: int, n_candidates: int) -> tuple[str, bool]:
-    """Certificate text for k − 1 and whether it holds."""
+def certificate(p: Problem, prev: Level | None, k: int, n_candidates: int) -> tuple[str, bool, str]:
+    """Certificate for k − 1: (full text, whether it holds, one plain sentence)."""
     if k == 1:
         text = _water_certificate(p)
-        return (
-            (text, True) if text else ("No certificate: water alone is not shown to fail.", False)
+        if not text:
+            msg = "No certificate: water alone is not shown to fail."
+            return msg, False, msg
+        plain = (
+            f"No blend with fewer surfactants can work: water alone stays at "
+            f"{p.gamma0 * 1e3:.0f} mN/m and fails the spec."
         )
+        return text, True, plain
     assert prev is not None
     who = "single surfactant" if k == 2 else f"{k - 1}-surfactant blend"
     if not prev.complete:
-        return f"No certificate: the k = {k - 1} level was not exhaustively classified.", False
+        msg = f"No certificate: the k = {k - 1} level was not exhaustively classified."
+        return msg, False, msg
     if prev.undetermined.any():
+        n_und = int(prev.undetermined.sum())
         return (
-            f"No certificate: {int(prev.undetermined.sum())} {who}s are undetermined "
+            f"No certificate: {n_und} {who}s are undetermined "
             "(the DST bracket straddles a band); they are worth testing in the lab.",
             False,
+            f"No certificate: {n_und} {who}s might still meet the spec within the model's "
+            "uncertainty, so they are worth testing in the lab.",
         )
     r = int(prev.opt.min(1).argmax())  # closest to passing
     b = int(prev.opt[r].argmin())
@@ -355,14 +365,20 @@ def certificate(p: Problem, prev: Level | None, k: int, n_candidates: int) -> tu
         val, sd, bound, cmp, lim = hi_m, hi_s, hi_m + z * hi_s, "<", band.lo
         side = "optimistic (dst_high)" if dst else "γ_eq"
     n_ref = int(prev.refined.sum())
-    return (
+    text = (
         f"No {who} meets {band_label(band)} within {p.cap:g}% w/v (z = {z:g}): all "
         f"{len(prev.idx)} {who}s checked ({prev.n_grid} grid points over {n_candidates} candidates "
         f"+ {n_ref} refined, Monte Carlo σ ⊕ σ_model {p.sigma_model * 1e3:.1f} mN/m) fail at least "
         f"one band on its optimistic side. Closest: {_blend_text(p, prev.idx[r], prev.wv[r])}, "
         f"{side} {val * 1e3:.1f} ± {sd * 1e3:.1f} mN/m; {val * 1e3:.1f} "
         f"{'−' if cmp == '>' else '+'} {z:g}σ = {bound * 1e3:.1f} {cmp} {lim * 1e3:g} mN/m."
-    ), True
+    )
+    plain = (
+        f"No {who} within {p.cap:g}% w/v can meet the spec: the closest, "
+        f"{_blend_text(p, prev.idx[r], prev.wv[r])}, reaches {val * 1e3:.1f} ± {sd * 1e3:.1f} mN/m "
+        f"against {band_label(band)}."
+    )
+    return text, True, plain
 
 
 def _rows(p: Problem, level: Level, rows: np.ndarray) -> pd.DataFrame:
@@ -370,6 +386,7 @@ def _rows(p: Problem, level: Level, rows: np.ndarray) -> pd.DataFrame:
     for r in rows:
         rec = {
             "blend": " + ".join(p.names[i] for i in level.idx[r]),
+            "names": [str(p.names[i]) for i in level.idx[r]],
             "wv": [float(w) for w in level.wv[r]],
             "total_wv": float(level.wv[r].sum()),
             "worst_margin": float(level.pess[r].min()),
@@ -385,6 +402,14 @@ def _rows(p: Problem, level: Level, rows: np.ndarray) -> pd.DataFrame:
             )
         out.append(rec)
     return pd.DataFrame(out)
+
+
+def _runner_up(p: Problem, level: Level, certified: bool) -> dict:
+    """Best blend of a level: the certificate's closest blend (max optimistic margin) when the
+    level is certified, else the one nearest to provable feasibility (max pessimistic margin)."""
+    r = int((level.opt if certified else level.pess).min(1).argmax())
+    names = [str(p.names[i]) for i in level.idx[r]]
+    return {"k": level.k, "names": names, "wv": [float(w) for w in level.wv[r]]}
 
 
 def _closest_first(und: pd.DataFrame) -> pd.DataFrame:
@@ -409,6 +434,8 @@ class Outcome:
     excluded: pd.DataFrame = field(default_factory=pd.DataFrame)  # name, reason
     regulatory_removed: list[str] = field(default_factory=list)
     regulatory_note: str = ""  # disclaimer + snapshot date; show wherever flags appear
+    certificate_plain: str = ""  # one plain sentence
+    runner_up: dict | None = None  # best (k − 1) blend: {"k", "names", "wv"}; k = 0 is water
 
 
 def optimise(
@@ -418,12 +445,14 @@ def optimise(
     n_draws: int = 200,
     sigma_model: float | None = None,
     exclude_inconsistent: bool = config.EXCLUDE_INCONSISTENT,
+    progress: Callable[[float, str], None] | None = None,
 ) -> Outcome:
     """Find the fewest-surfactant feasible blend, then the lowest loading; certify k − 1.
 
     σ_model defaults to max(config.SIGMA_MODEL, pC20-check RMSE over all fully measured
     candidates) (config value if there are none). Candidates flagged INCONSISTENT by
-    data_quality are excluded unless ``exclude_inconsistent`` is False.
+    data_quality are excluded unless ``exclude_inconsistent`` is False. ``progress(fraction,
+    message)`` is called as each k starts and when the search ends.
     """
     t0 = time.perf_counter()
     check = pc20_check(lib)
@@ -445,6 +474,8 @@ def optimise(
     levels: list[Level] = []
     winner_level = None
     for k in range(1, p.max_k + 1):
+        if progress:
+            progress((k - 1) / p.max_k, f"Searching k = {k} of {p.max_k}…")
         level = search_level(p, k)
         if level is None:
             break
@@ -473,11 +504,14 @@ def optimise(
         und = pd.concat(frames) if frames else pd.DataFrame()
         und = _closest_first(und)
         text = f"No blend with k ≤ {p.max_k} is feasible under the model."
+        plain = f"No blend with up to {p.max_k} surfactants meets the spec under the model."
         done = [lv for lv in levels if lv.complete and lv.failed.all()]
         certified = bool(done)
         if done:  # certify the largest k at which every blend fails
             text += " " + certificate(p, done[-1], done[-1].k + 1, len(cands))[0]
         runtime = time.perf_counter() - t0
+        if progress:
+            progress(1.0, "Done: no feasible blend.")
         return Outcome(
             None,
             pd.DataFrame(),
@@ -491,6 +525,8 @@ def optimise(
             excluded,
             removed,
             note,
+            plain,
+            _runner_up(p, levels[-1], certified=False) if levels else None,
         )
 
     lv, k = winner_level, winner_level.k
@@ -499,7 +535,8 @@ def optimise(
     best = _best_per_subset(lv.idx[order], np.arange(len(order)), len(order))
     ranked = order[np.sort(best)]
     prev = levels[-2] if k > 1 else None
-    text, certified = certificate(p, prev, k, len(cands))
+    text, certified, plain = certificate(p, prev, k, len(cands))
+    runner = {"k": 0, "names": [], "wv": []} if prev is None else _runner_up(p, prev, certified)
     und = _closest_first(
         _rows(p, prev, np.flatnonzero(prev.undetermined)) if prev is not None else pd.DataFrame()
     )
@@ -527,6 +564,8 @@ def optimise(
         regulatory_removed=removed,
         regulatory_note=note,
     )
+    if progress:
+        progress(1.0, f"Done: k = {k}.")
     return Outcome(
         result,
         _rows(p, lv, ranked),
@@ -540,4 +579,29 @@ def optimise(
         excluded,
         removed,
         note,
+        plain,
+        runner,
     )
+
+
+def outcome_payload(o: Outcome, spec: Spec, cons: Constraints, spec_file: str = "") -> dict:
+    """JSON-ready summary of an optimisation (used by the CLI and the app)."""
+    return {
+        "spec_file": spec_file,
+        "spec": spec.model_dump(),
+        "constraints": cons.model_dump(),
+        "sigma_model_N_m": o.sigma_model,
+        "pc20_check": o.pc20,
+        "levels": o.levels,
+        "result": o.result.model_dump() if o.result else None,
+        "certified": o.certified,
+        "certificate": o.certificate,
+        "certificate_plain": o.certificate_plain,
+        "runner_up": o.runner_up,
+        "top_feasible": o.feasible.head(10).to_dict("records"),
+        "undetermined": o.undetermined.head(50).to_dict("records"),
+        "excluded": o.excluded.to_dict("records"),
+        "regulatory_removed": o.regulatory_removed,
+        "regulatory_note": o.regulatory_note,
+        "runtime_s": o.runtime_s,
+    }
