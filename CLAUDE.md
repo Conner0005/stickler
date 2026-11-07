@@ -23,6 +23,7 @@
 - `src/wetopt/physics.py`: Szyszkowski + Clint/Rubingh γ_eq; DST bracket (dst_low capped Ward–Tordai, dst_high Sutherland); Monte Carlo σ ⊕ σ_model. See `docs/physics.md`.
 - `src/wetopt/optimise.py`: exhaustive k-search (log grid → MC classify → Powell refine), feasible/failed/undetermined, k − 1 certificate. `validate.py`: pC20 check (σ_model floor) + data-quality filter (|error| > 3·σ_model → excluded).
 - Inputs: `schema.Scenario` = five groups (active_ingredient, target_leaf, spray, wetting_target, constraints), saved as YAML (`examples/cereal.yaml`). `scenario.py`: input rules (charge compatibility, tank AI, time to impact, warnings) + summary; `questions.py`: plain-language answers → Scenario, 'What this means' line, single relaxation. Inputs not in the physics are labelled 'recorded, not modelled'.
+- `calibrate.py`: optional GP correction (sklearn, fixed kernel) of dst_high from lab CSVs; calibrated DST is an estimate, not a bound. Demo data `examples/demo_measurements.csv` is SYNTHETIC.
 - Website: `streamlit_app.py` → `src/wetopt/site.py` (Home, Optimiser, Regulations, Method); `app.py` = Optimiser page (fast mode, 60 s cap). Deploy per `DEPLOY.md` (`requirements.txt`, `.streamlit/config.toml`).
 - `src/wetopt/regulatory.py` + `data/regulations.yaml`: hardcoded co-formulant flags by CAS/RDKit structure; `Constraints.markets`/`policy`. Always show the disclaimer with flags.
 - `tests/` smoke tests · `data/raw/` source data as obtained · `examples/` spec+constraints YAMLs · `results/` (git-ignored) · `docs/data.md` units, licence, provenance.

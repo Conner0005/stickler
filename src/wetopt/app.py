@@ -17,7 +17,7 @@ import streamlit as st
 import yaml
 from pydantic import ValidationError
 
-from wetopt import config, regulatory, ui
+from wetopt import calibrate, config, regulatory, ui
 from wetopt import optimise as opt
 from wetopt.physics import SurfactantArrays, gamma_water, monte_carlo_dst
 from wetopt.questions import (
@@ -622,6 +622,16 @@ def show(lib: pd.DataFrame, run: dict) -> None:
     o, scn = run["o"], run["scn"]
     spec, cons, r = scn.wetting_target, scn.constraints, o.result
     flags = regulatory_flags(lib, tuple(cons.markets))
+    cal = run.get("cal")
+    if cal is not None:
+        demo = " (synthetic demo data)" if run.get("demo") else ""
+        ui.render(
+            ui.note(
+                f"Calibrated on {cal.n} measurements{demo}, not a pessimistic bound. "
+                f"RMSE {cal.rmse_before:.1f} → {cal.rmse_after:.1f} mN/m."
+            )
+        )
+        st.write("")
     if r is None:
         relax = run.get("relax")
         if run["custom"]:
@@ -774,6 +784,51 @@ def regulatory_count(lib: pd.DataFrame, markets: tuple[str, ...], policy: str) -
     return sum(any(f.status in statuses for f in fl) for fl in flags.values())
 
 
+DEMO_CSV = config.ROOT / "examples" / "demo_measurements.csv"
+
+
+@st.cache_data
+def fit_calibration(csv_text: str, lib: pd.DataFrame) -> calibrate.Calibration | None:
+    return calibrate.fit(calibrate.read_measurements(csv_text), lib, sigma_model(lib))
+
+
+def calibration_panel(lib: pd.DataFrame) -> tuple[calibrate.Calibration | None, bool]:
+    """Sidebar expander: lab data (upload or synthetic demo) and the Calibrated switch.
+    Returns (calibration if switched on and fitted, whether the data are the synthetic demo)."""
+    with st.sidebar.expander("Improve predictions with your lab data"):
+        up = st.file_uploader(
+            "Measured DST (CSV)",
+            type="csv",
+            key="calib_upload",
+            help="Columns: "
+            + ", ".join(calibrate.COLUMNS)
+            + ". Leave surfactant_2 blank if unused.",
+        )
+        if st.button("Use demo data (synthetic)", key="calib_demo"):
+            st.session_state["calib_use_demo"] = True
+        demo = up is None and st.session_state.get("calib_use_demo", False)
+        text = (
+            up.getvalue().decode("utf-8", "replace")
+            if up is not None
+            else (DEMO_CSV.read_text() if demo else None)
+        )
+        on = st.checkbox("Calibrated", False, key="calib_on")
+        if text is None:
+            st.caption("Upload measurements or use the demo data, then tick Calibrated.")
+            return None, False
+        if demo:
+            st.warning("Synthetic demo data loaded: not real measurements.")
+        cal = fit_calibration(text, lib)
+        if cal is None:
+            st.error("No valid rows in the file.")
+            return None, demo
+        st.caption(
+            f"{cal.n} measurements used, {cal.skipped} rows skipped as invalid. "
+            f"RMSE {cal.rmse_before:.1f} → {cal.rmse_after:.1f} mN/m."
+        )
+    return (cal if on else None), demo
+
+
 def optimiser_page() -> None:
     ui.inject()
     ui.render(
@@ -790,6 +845,7 @@ def optimiser_page() -> None:
     if adv is None:
         return
     scn, custom, qc, exhaustive = adv
+    cal, demo = calibration_panel(lib)
     n_charge = len(compatibility_exclusions(lib, scn.active_ingredient))
     n_reg = regulatory_count(lib, tuple(scn.constraints.markets), scn.constraints.policy)
     parts = what_this_means_parts(answers, custom, n_charge, n_reg, scn)
@@ -806,6 +862,7 @@ def optimiser_page() -> None:
             exhaustive=exhaustive,
             time_limit_s=TIME_LIMIT_S,
             progress=lambda f, msg: bar.progress(min(f, 1.0), text=msg),
+            calibration=cal,
         )
         relax = None
         if o.result is None and not custom:
@@ -818,6 +875,7 @@ def optimiser_page() -> None:
                         exclude_inconsistent=qc,
                         exhaustive=False,
                         time_limit_s=RELAX_TIME_S,
+                        calibration=cal,
                     ),
                 )
         bar.empty()
@@ -829,10 +887,12 @@ def optimiser_page() -> None:
             "qc": qc,
             "exhaustive": exhaustive,
             "line": line,
+            "cal": cal,
+            "demo": demo,
             "relax": relax,
         }
     run = st.session_state["run"]
-    if (run["scn"], run["qc"], run["exhaustive"]) != (scn, qc, exhaustive):
+    if (run["scn"], run["qc"], run["exhaustive"], run.get("cal")) != (scn, qc, exhaustive, cal):
         st.warning("Your answers have changed since this result. Press **Find recipe** to update.")
     show(lib, run)
     quality_panel(lib, qc)
