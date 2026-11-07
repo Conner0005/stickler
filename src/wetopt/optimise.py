@@ -470,6 +470,7 @@ def optimise(
     progress: Callable[[float, str], None] | None = None,
     exhaustive: bool = True,
     time_limit_s: float | None = None,
+    extra_excluded: pd.DataFrame | None = None,
 ) -> Outcome:
     """Find the fewest-surfactant feasible blend, then the lowest loading; certify k − 1.
 
@@ -479,6 +480,8 @@ def optimise(
     message)`` is called as each k starts and when the search ends. ``exhaustive=False`` (fast
     mode) runs Monte Carlo only on the top screen-passing and refined blends, so no k − 1 ≥ 1
     certificate can be issued. ``time_limit_s`` stops the search between chunks.
+    ``extra_excluded`` (columns name, reason) removes further candidates, e.g. surfactants
+    incompatible with the active ingredient; they are reported with the QC exclusions.
     """
     t0 = time.perf_counter()
     check = pc20_check(lib)
@@ -488,6 +491,8 @@ def optimise(
     excluded = qc.loc[qc["status"] == INCONSISTENT, ["name", "reason"]]
     if not exclude_inconsistent:
         excluded = excluded.iloc[:0]
+    if extra_excluded is not None and len(extra_excluded):
+        excluded = pd.concat([excluded, extra_excluded[["name", "reason"]]], ignore_index=True)
     regs = regulatory.load()
     screened = regulatory.screen(lib, list(cons.markets), regs)
     statuses = regulatory.excluded_statuses(cons.policy)

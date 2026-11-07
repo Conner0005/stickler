@@ -11,10 +11,10 @@ import yaml
 from rich.console import Console
 from rich.table import Table
 
-from wetopt import config
+from wetopt import config, scenario
 from wetopt import optimise as opt
 from wetopt.library import build_library, load_surfpro, select_candidates
-from wetopt.schema import Constraints, Spec
+from wetopt.schema import Scenario
 from wetopt.validate import data_quality
 
 app = typer.Typer(no_args_is_help=True)
@@ -75,7 +75,7 @@ def _json_default(x):
 
 @app.command()
 def optimise(
-    spec_path: Annotated[Path, typer.Argument(help="YAML with `spec` and `constraints`.")],
+    spec_path: Annotated[Path, typer.Argument(help="Scenario YAML (see examples/cereal.yaml).")],
     library: Annotated[Path, typer.Option(help="Candidate library parquet.")] = config.LIBRARY_PATH,
     out_dir: Annotated[Path, typer.Option(help="Where to write <spec>.json.")] = (
         config.ROOT / "results"
@@ -92,9 +92,10 @@ def optimise(
     data = yaml.safe_load(spec_path.read_text())
     if markets is not None:
         data["constraints"]["markets"] = [m.strip() for m in markets.split(",") if m.strip()]
-    spec, cons = Spec.model_validate(data["spec"]), Constraints.model_validate(data["constraints"])
+    scn = Scenario.model_validate(data)
+    spec, cons = scn.wetting_target, scn.constraints
     lib = pd.read_parquet(library)
-    o = opt.optimise(lib, spec, cons, exclude_inconsistent=not include_inconsistent)
+    o = scenario.optimise_scenario(lib, scn, exclude_inconsistent=not include_inconsistent)
 
     console.rule(f"wetopt optimise · {spec_path.name}")
     bands = " · ".join(opt.band_label(b) for b in spec.bands)
@@ -106,8 +107,10 @@ def optimise(
         f"Spec: {bands} · z = {spec.z:g} · total ≤ {cons.max_total_wv:g}% w/v · k ≤ {cons.max_k}"
     )
     console.print(f"σ_model = {o.sigma_model * 1e3:.1f} mN/m ({pc_text})")
+    for line in scenario.input_summary(scn, o, lib):
+        console.print(f"[cyan]•[/] {line}")
     for row in o.excluded.itertuples():
-        console.print(f"[yellow]Excluded[/] {row.name}: inconsistent source data ({row.reason})")
+        console.print(f"[yellow]Excluded[/] {row.name}: {row.reason}")
     if not len(o.excluded):
         console.print("No candidates excluded for data quality.")
     console.print(
@@ -172,6 +175,9 @@ def optimise(
     console.print(f"[dim]{o.regulatory_note}[/]")
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f"{spec_path.stem}.json"
-    payload = opt.outcome_payload(o, spec, cons, str(spec_path))
+    payload = {
+        "scenario": scn.model_dump(mode="json"),
+        **opt.outcome_payload(o, spec, cons, str(spec_path)),
+    }
     out.write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=_json_default))
     console.print(f"{o.runtime_s:.1f} s · wrote {out}")

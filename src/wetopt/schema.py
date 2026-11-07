@@ -139,3 +139,71 @@ class Result(BaseModel):
         if len(self.margins) != len(self.predictions):
             raise ValueError("need one margin per prediction")
         return self
+
+
+# --- Scenario: the saved spec shared by presets, the CLI, the Cloud app and the web build -----
+# Five groups, in UI order. Fields marked "recorded, not modelled" are stored and shown but do
+# not enter the physics (which stays at 298.15 K).
+
+AICharge = Literal["nonionic", "anionic", "cationic"]
+
+
+class ActiveIngredient(BaseModel):
+    """1. Active ingredient. Its own effect on surface tension is not modelled."""
+
+    name: str = ""
+    ionic_character: AICharge = "nonionic"
+    formulation: Literal["SC", "EC", "SL", "WG", "WP", "OD"] = "SC"
+    content: float | None = Field(None, gt=0, description="AI content of the product")
+    content_unit: Literal["g/L", "g/kg"] = "g/L"
+    concentrate_density_kg_l: float | None = Field(None, gt=0, description="product density")
+    max_coformulant_wt_pct: float | None = Field(
+        None, gt=0, le=100, description="most surfactant the concentrate can carry, % w/w"
+    )
+
+
+class TargetLeaf(BaseModel):
+    """2. Target leaf. A difficult-to-wet preset prefills the wetting target."""
+
+    preset: str = "custom"
+    hard_to_wet: bool = True
+    hairy: bool | None = Field(None, description="recorded, not modelled")
+    theta_acetone50_deg: float | None = Field(
+        None, ge=0, le=180, description="θ of 50 % aqueous acetone, degrees; recorded, not modelled"
+    )
+
+
+class SprayConditions(BaseModel):
+    """3. Spray conditions."""
+
+    spray_volume_l_ha: float | None = Field(None, gt=0)
+    product_rate: float | None = Field(None, gt=0)
+    product_rate_unit: Literal["L/ha", "kg/ha"] = "L/ha"
+    boom_height_m: float | None = Field(None, gt=0)
+    droplet_speed_m_s: float | None = Field(None, gt=0)
+    water_temperature_c: float = Field(25.0, description="recorded, not modelled")
+    water_hardness: Literal["soft", "medium", "hard"] = Field(
+        "medium", description="recorded, not modelled"
+    )
+    droplet_size: Literal["fine", "medium", "coarse"] = Field(
+        "medium", description="recorded, not modelled"
+    )
+
+
+class Scenario(BaseModel):
+    """Saved spec (YAML/JSON): AI, target leaf, spray, wetting target, constraints."""
+
+    active_ingredient: ActiveIngredient = ActiveIngredient()
+    target_leaf: TargetLeaf = TargetLeaf()
+    spray: SprayConditions = SprayConditions()
+    wetting_target: Spec
+    constraints: Constraints
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy(cls, data: object) -> object:
+        """Accept the older {spec, constraints} files."""
+        if isinstance(data, dict) and "spec" in data and "wetting_target" not in data:
+            data = {**data, "wetting_target": data["spec"]}
+            data.pop("spec")
+        return data

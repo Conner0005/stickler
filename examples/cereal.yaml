@@ -1,11 +1,21 @@
-# Cereal (barley) retention spec. Units are SI (N/m) except fields with a unit suffix.
-# Baur & Pontzen (2007): DST at 200 ms of about 50 mN/m gives about 50 % adhesion on barley.
-# The original target was <= 0.1 % w/v total; under the model no blend with k <= 3 meets it
+# Cereal (wheat) retention scenario: the saved spec shared by presets, the CLI and the apps.
+# Units are SI unless the field name carries a unit suffix (_ms, _l_ha, _m, _m_s, _c, _wv).
+# The original loading target was <= 0.1 % w/v; under the model no blend with k <= 3 meets it
 # (the best single misses the pessimistic DST bound by ~2 mN/m), so the demo cap is 0.2 % w/v.
-spec:
+active_ingredient:
+  name: azoxystrobin
+  ionic_character: nonionic
+  formulation: SC
+target_leaf:
+  preset: wheat
+spray:
+  spray_volume_l_ha: 200
+  boom_height_m: 0.5
+wetting_target:
   z: 1.28  # ~90 % one-sided robustness
   bands:
-    - {metric: dst, surface_age_ms: 200, lo: 0.0, hi: 0.050}  # DST(200 ms) <= 50 mN/m
+    # Baur & Pontzen (2007): DST at 200 ms of about 50 mN/m gives about 50 % adhesion on barley.
+    - {metric: dst, surface_age_ms: 200, lo: 0.0, hi: 0.050}
 constraints:
   max_k: 3
   max_total_wv: 0.2  # % w/v, total surfactant in the spray tank

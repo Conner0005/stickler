@@ -10,9 +10,9 @@ def test_app_imports_and_cereal_headless():
 
     at = AppTest.from_file(str(config.ROOT / "src" / "wetopt" / "app.py"), default_timeout=120)
     at.run()
-    assert not at.exception and at.sidebar.selectbox[0].value == "cereal"
-    at.button[0].click().run()
+    assert not at.exception  # opens on wheat + azoxystrobin + EU + Standard and runs it
+    at.sidebar.button[0].click().run()  # Find recipe
     assert not at.exception
-    outcome = at.session_state["run"][0]
+    outcome = at.session_state["run"]["o"]
     assert outcome.result is not None and outcome.result.k == 1
     assert any("water alone" in el.value for el in at.success)
