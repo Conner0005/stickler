@@ -49,4 +49,16 @@ Caveats found while checking:
 6. Family is assigned from RDKit SMARTS, first match wins: siloxane (any Si), sulfosuccinate, alkylbenzene sulfonate, alkyl sulfate (includes ether sulfates), sugar-based (ring or open-chain polyol), alcohol ethoxylate (C/H/O only, non-aromatic), other.
 7. Selection: the six named families count as agro-like unless fluorinated. They are taken round-robin, and within a family entries with more measured properties rank first. 40 candidates are saved to `data/library.parquet`, each with a `reason`.
 
+## Data-quality filter (`validate.data_quality`, default on)
+For each candidate with a **measured** pC20, the pC20-check error is e = γ_model(C20) − (γ0 − 20 mN/m),
+where the model uses the candidate's own CMC, γ_CMC and Γ_max. The robust scale is
+s = 1.4826·MAD(e) over all such candidates. If |e| > 3·s (`config.QC_MAD_THRESHOLD`), the
+candidate is flagged **inconsistent source data** and excluded from optimisation, with the
+reason shown. Turn this off with `config.EXCLUDE_INCONSISTENT` or `wetopt optimise --include-inconsistent`.
+Candidates without a measured pC20 are **unchecked** and are not excluded.
+Current library: 28 checked, s = 0.58 mN/m, 3·s = 1.7 mN/m. The 5 flagged are C14H29NaO5S #1 (+16.0),
+C43H96O19SSi4 #1 (−6.6), C12H25NaO4S #1 (SDS, −3.9), C26H60O9SSi3 (−3.4) and C23H44O7S (−2.2 mN/m).
+Caveat: many SurfPro pC20 values are `calculated` from isotherm fits, which makes errors cluster
+near zero, so s is small and the 3·s cut is strict. σ_model still uses the RMSE over all 28 (3.5 mN/m).
+
 Names: `CnEm` for linear alcohol ethoxylates, otherwise the molecular formula, with ` #k` added when isomers share a formula. SurfPro has no common names.

@@ -21,7 +21,7 @@
 - `src/wetopt/schema.py`: pydantic v2 models (Quantity, Surfactant, Band, Spec, Constraints, Blend, Prediction, Result).
 - `src/wetopt/library.py`: SurfPro → `data/library.parquet` (40 candidates). `config.py`: paths, σ/n/D assumptions. `cli.py`: `wetopt`.
 - `src/wetopt/physics.py`: Szyszkowski + Clint/Rubingh γ_eq; DST bracket (dst_low capped Ward–Tordai, dst_high Sutherland); Monte Carlo σ ⊕ σ_model. See `docs/physics.md`.
-- `src/wetopt/optimise.py`: exhaustive k-search (log grid → MC classify → Powell refine), feasible/failed/undetermined, k − 1 certificate. `validate.py`: pC20 check (sets σ_model floor).
+- `src/wetopt/optimise.py`: exhaustive k-search (log grid → MC classify → Powell refine), feasible/failed/undetermined, k − 1 certificate. `validate.py`: pC20 check (σ_model floor) + data-quality filter (|error| > 3·1.4826·MAD → excluded).
 - `tests/` smoke tests · `data/raw/` source data as obtained · `examples/` spec+constraints YAMLs · `results/` (git-ignored) · `docs/data.md` units, licence, provenance.
 - SurfPro is CC BY-NC-SA 4.0 (non-commercial, share-alike); fetch it per `docs/data.md`.
 

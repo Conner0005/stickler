@@ -5,7 +5,7 @@ import pandas as pd
 
 from wetopt import config
 from wetopt.physics import T0, R, gamma_water, szyszkowski_K
-from wetopt.validate import pc20_check
+from wetopt.validate import INCONSISTENT, data_quality, pc20_check
 
 
 def test_pc20_check_exact_and_library():
@@ -25,3 +25,13 @@ def test_pc20_check_exact_and_library():
     assert check.n == 1 and check.rmse < 1e-9
     lib_check = pc20_check(pd.read_parquet(config.LIBRARY_PATH))
     assert lib_check.n >= 10 and 0 < lib_check.rmse < 0.02
+
+
+def test_data_quality_flags_outliers_not_unchecked():
+    lib = pd.read_parquet(config.LIBRARY_PATH)
+    qc = data_quality(lib)
+    status = dict(zip(qc["name"], qc["status"], strict=True))
+    assert status["C14H29NaO5S #1"] == INCONSISTENT  # pC20-check error +16 mN/m
+    unchecked = ~lib["pc20_measured"]
+    assert (qc.loc[unchecked.to_numpy(), "status"] == "unchecked").all()
+    assert set(qc["status"]) <= {"consistent", INCONSISTENT, "unchecked"}

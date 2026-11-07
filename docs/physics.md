@@ -87,6 +87,20 @@ K is re-derived per draw. The reported std is √(std_MC² + σ_model²), where 
 7. D comes from Wilke–Chang/Le Bas (~10–20 % error; the atom-count Le Bas ignores ether-O variants), or from the class default for Si.
 8. T = 298.15 K; SurfPro values measured at 20–30 °C are used as if at 25 °C.
 
+## Next steps (physics frozen for now; not implemented)
+With the current model no spec has been found where a pair beats every single surfactant.
+For example, with DST(200 ms) ≤ 50 mN/m and 0.2 % w/v, adding γ_eq ≤ hi_eq: a single is
+feasible down to hi_eq = 36 mN/m, and from 35 mN/m nothing with k ≤ 2 is. Certificates for
+k ≥ 2 are out of reach because dst_low is so optimistic. Candidate changes:
+1. **Surface synergy β^σ:** an interaction parameter in the mixed monolayer (Rosen's β^σ),
+   so a blend can reach a lower γ than its components. Needs β^σ data or an imputation rule.
+2. **Transient competition:** let each component adsorb towards its single-surfactant coverage
+   and be displaced later, instead of capping Γ_i(t) at its competitive-equilibrium share.
+   This allows fast + strong pairs.
+3. **Full Ward–Tordai/Langmuir lower bound:** replace the capped short-time form for dst_low
+   with the full Ward–Tordai solution (back-diffusion, Langmuir isotherm, total concentration).
+   It is still optimistic but much tighter, which makes k − 1 certificates possible.
+
 ## References
 - IAPWS R1-76(2014), Revised Release on Surface Tension of Ordinary Water Substance.
 - Szyszkowski, Z. Phys. Chem. 64, 385 (1908).

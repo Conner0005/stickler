@@ -15,6 +15,7 @@ from wetopt import config
 from wetopt import optimise as opt
 from wetopt.library import build_library, load_surfpro, select_candidates
 from wetopt.schema import Constraints, Spec
+from wetopt.validate import data_quality
 
 app = typer.Typer(no_args_is_help=True)
 console = Console()
@@ -51,7 +52,9 @@ def library(
     for col in ["CMC / mM", "γ_CMC / mN/m", "Γ_max / µmol/m²"]:
         table.add_column(col, justify="right")
     table.add_column("M/I: CMC γ Γ pC20", no_wrap=True)
+    table.add_column("QC (pC20 check)", no_wrap=True)
     props = ["cmc", "gamma_cmc", "gamma_max", "pc20"]
+    qc = data_quality(sel).set_index("name")
     for r in sel.to_dict("records"):
         table.add_row(
             r["name"],
@@ -60,6 +63,7 @@ def library(
             f"{r['gamma_cmc'] * 1e3:.1f}",
             f"{r['gamma_max'] * 1e6:.2f}",
             " ".join("M" if r[f"{p}_measured"] else "I" for p in props),
+            qc.loc[r["name"], "status"],
         )
     console.print(table)
     console.print("M = measured (SurfPro literature), I = imputed (SurfPro GNN ensemble)")
@@ -76,12 +80,15 @@ def optimise(
     out_dir: Annotated[Path, typer.Option(help="Where to write <spec>.json.")] = (
         config.ROOT / "results"
     ),
+    include_inconsistent: Annotated[
+        bool, typer.Option(help="Keep candidates flagged 'inconsistent source data'.")
+    ] = not config.EXCLUDE_INCONSISTENT,
 ) -> None:
     """Fewest-surfactant blend for a spec, top feasible blends, and the k − 1 certificate."""
     data = yaml.safe_load(spec_path.read_text())
     spec, cons = Spec.model_validate(data["spec"]), Constraints.model_validate(data["constraints"])
     lib = pd.read_parquet(library)
-    o = opt.optimise(lib, spec, cons)
+    o = opt.optimise(lib, spec, cons, exclude_inconsistent=not include_inconsistent)
 
     console.rule(f"wetopt optimise · {spec_path.name}")
     bands = " · ".join(opt.band_label(b) for b in spec.bands)
@@ -93,6 +100,10 @@ def optimise(
         f"Spec: {bands} · z = {spec.z:g} · total ≤ {cons.max_total_wv:g}% w/v · k ≤ {cons.max_k}"
     )
     console.print(f"σ_model = {o.sigma_model * 1e3:.1f} mN/m ({pc_text})")
+    for row in o.excluded.itertuples():
+        console.print(f"[yellow]Excluded[/] {row.name}: inconsistent source data ({row.reason})")
+    if not len(o.excluded):
+        console.print("No candidates excluded for data quality.")
     levels = Table(title="Search by k")
     for c in ["k", "grid blends", "classified (MC)", "feasible", "failed", "undetermined"]:
         levels.add_column(c, justify="right")
@@ -158,6 +169,7 @@ def optimise(
         "certificate": o.certificate,
         "top_feasible": o.feasible.head(10).to_dict("records"),
         "undetermined": o.undetermined.head(50).to_dict("records"),
+        "excluded": o.excluded.to_dict("records"),
         "runtime_s": o.runtime_s,
     }
     out.write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=_json_default))

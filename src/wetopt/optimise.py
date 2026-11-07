@@ -28,7 +28,7 @@ from wetopt.physics import (
     szyszkowski_K,
 )
 from wetopt.schema import Band, Blend, Constraints, Prediction, Result, Spec
-from wetopt.validate import pc20_check
+from wetopt.validate import INCONSISTENT, data_quality, pc20_check
 
 GRID_LEVELS = 10  # log-grid levels per component
 GRID_SPAN = 1e-3  # lowest level as a fraction of the loading cap
@@ -395,6 +395,7 @@ class Outcome:
     pc20: dict
     levels: list[dict] = field(default_factory=list)
     runtime_s: float = 0.0
+    excluded: pd.DataFrame = field(default_factory=pd.DataFrame)  # name, reason
 
 
 def optimise(
@@ -403,16 +404,23 @@ def optimise(
     cons: Constraints,
     n_draws: int = 200,
     sigma_model: float | None = None,
+    exclude_inconsistent: bool = config.EXCLUDE_INCONSISTENT,
 ) -> Outcome:
     """Find the fewest-surfactant feasible blend, then the lowest loading; certify k − 1.
 
-    σ_model defaults to max(config.SIGMA_MODEL, pC20-check RMSE) (config value if no
-    candidate has all four properties measured).
+    σ_model defaults to max(config.SIGMA_MODEL, pC20-check RMSE over all fully measured
+    candidates) (config value if there are none). Candidates flagged INCONSISTENT by
+    data_quality are excluded unless ``exclude_inconsistent`` is False.
     """
     t0 = time.perf_counter()
     check = pc20_check(lib)
     if sigma_model is None:
         sigma_model = max(config.SIGMA_MODEL, check.rmse) if check.n else config.SIGMA_MODEL
+    qc = data_quality(lib)
+    excluded = qc.loc[qc["status"] == INCONSISTENT, ["name", "reason"]]
+    if not exclude_inconsistent:
+        excluded = excluded.iloc[:0]
+    lib = lib[~lib["name"].isin(excluded["name"])]
     p, cands = make_problem(lib, spec, cons, sigma_model, n_draws)
     levels: list[Level] = []
     winner_level = None
@@ -451,7 +459,16 @@ def optimise(
             text += " " + certificate(p, done[-1], done[-1].k + 1, len(cands))[0]
         runtime = time.perf_counter() - t0
         return Outcome(
-            None, pd.DataFrame(), und, text, certified, sigma_model, pc20, summaries, runtime
+            None,
+            pd.DataFrame(),
+            und,
+            text,
+            certified,
+            sigma_model,
+            pc20,
+            summaries,
+            runtime,
+            excluded,
         )
 
     lv, k = winner_level, winner_level.k
@@ -495,4 +512,5 @@ def optimise(
         pc20,
         summaries,
         time.perf_counter() - t0,
+        excluded,
     )
