@@ -7,11 +7,13 @@ See docs/physics.md for the full model and its assumptions.
 """
 
 from dataclasses import dataclass
+from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
 from numpy.typing import ArrayLike
 from rdkit import Chem
+from scipy.special import erfcx, ndtr, ndtri
 
 from wetopt import config
 
@@ -19,7 +21,7 @@ R = 8.314462618  # J/(mol K), CODATA 2018 (exact)
 T0 = 298.15  # K
 ETA_WATER = 0.8900e-3  # Pa s at 298.15 K, IAPWS 2008 (Huber et al., JPCRD 38, 101, 2009)
 M_WATER = 18.015e-3  # kg/mol
-GAMMA_MAX_FLOOR = 1e-7  # mol/m²; floor for Monte Carlo draws (SurfPro minimum is 1.28e-7)
+GAMMA_MAX_FLOOR = 1e-7  # mol/m²; truncation for Monte Carlo draws (SurfPro min is 1.28e-7)
 
 
 def gamma_water(T: ArrayLike = T0) -> np.ndarray:
@@ -155,22 +157,66 @@ def surface_tension_eos(
     return np.asarray(gamma0) + R * T * n_gamma_eff * lnv
 
 
-def adsorbed_amount(
-    t: ArrayLike, c: ArrayLike, D: ArrayLike, theta: ArrayLike, gamma_max: ArrayLike
+def adsorbed_short_time(
+    t: ArrayLike, c: ArrayLike, D: ArrayLike, gamma_eq: ArrayLike
 ) -> np.ndarray:
-    """Diffusion-limited surface excess Γ_i(t), mol/m², shape (..., T, k).
+    """Short-time diffusion-limited surface excess, capped at equilibrium; mol/m², (..., T, k).
 
-    Γ_i(t) = min(2·c_i·sqrt(D_i·t/π), θ_i·Γ∞,i): short-time Ward–Tordai (no back-diffusion),
-    capped at the equilibrium coverage. Only free monomer adsorbs (micelles ignored).
+    Γ_i(t) = min(2·c_i·sqrt(D_i·t/π), Γ_i,eq): short-time Ward–Tordai limit with no
+    back-diffusion. It adsorbs at least as fast as the full Ward–Tordai solution, so the γ(t)
+    built on it UNDER-predicts DST (lower bound).
     Ref: Ward & Tordai, J. Chem. Phys. 14, 453 (1946); Eastoe & Dalton, Adv. Colloid
     Interface Sci. 85, 103 (2000).
     """
     t = np.asarray(t, float)[:, None]
     c, D = np.asarray(c, float)[..., None, :], np.asarray(D, float)[..., None, :]
-    sat = (np.asarray(theta) * np.asarray(gamma_max))[..., None, :]
     with np.errstate(invalid="ignore"):
         diffusive = np.where(c > 0, 2.0 * c * np.sqrt(D * t / np.pi), 0.0)
-    return np.minimum(diffusive, sat)
+    return np.minimum(diffusive, np.asarray(gamma_eq, float)[..., None, :])
+
+
+def adsorbed_sutherland(
+    t: ArrayLike, c: ArrayLike, D: ArrayLike, gamma_eq: ArrayLike
+) -> np.ndarray:
+    """Diffusion-controlled surface excess for a linear isotherm; mol/m², (..., T, k).
+
+    Γ_i(t) = Γ_i,eq·(1 − erfcx(sqrt(t/τ_i))), τ_i = (Γ_i,eq/c_i)²/D_i, erfcx(x) = exp(x²)·erfc(x),
+    with the secant Henry constant K_H,i = Γ_i,eq/c_i. Limits: 2·c_i·sqrt(D_i·t/π) as t → 0 and
+    Γ_i,eq as t → ∞. The Langmuir isotherm is concave, so the secant overstates back-diffusion
+    and this curve adsorbs no faster than the Langmuir case: the γ(t) built on it
+    OVER-predicts DST (upper bound).
+    Ref: Sutherland, Aust. J. Sci. Res. A 5, 683 (1952); Eastoe & Dalton (2000).
+    """
+    t = np.asarray(t, float)[:, None]
+    c, D = np.asarray(c, float)[..., None, :], np.asarray(D, float)[..., None, :]
+    g_eq = np.asarray(gamma_eq, float)[..., None, :]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        x = c * np.sqrt(D * t) / g_eq  # = sqrt(t/τ)
+        return np.where(c > 0, g_eq * (1.0 - erfcx(x)), 0.0)
+
+
+def _dynamic_eos(
+    G: np.ndarray,
+    gamma_eq: np.ndarray,
+    x: np.ndarray,
+    n: ArrayLike,
+    gamma_max: np.ndarray,
+    gamma0: ArrayLike,
+    T: float,
+) -> np.ndarray:
+    """γ (N/m) from surface excesses Γ_i(t) (..., T, k) via surface_tension_eos.
+
+    φ_i = Γ_i/Γ∞,i = θ_i·r_i with r_i = Γ_i/Γ_i,eq and x_i = K_i·c_i; the vacancy term is the
+    exact rewrite ln(1 − Σθ_i r_i) = ln(1 + Σx_i(1 − r_i)) − ln(1 + Σx_j), stable as Σθ → 1.
+    Ref: Chang & Franses (1995); see surface_tension_eos.
+    """
+    g_eq = gamma_eq[..., None, :]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        r = np.where(g_eq > 0, G / g_eq, 1.0)
+    theta = (x / (1.0 + x.sum(-1, keepdims=True)))[..., None, :]
+    lnv = np.log1p((x[..., None, :] * (1.0 - r)).sum(-1)) - np.log1p(x.sum(-1, keepdims=True))
+    n = np.asarray(n)[..., None, :]
+    return surface_tension_eos(theta * r, n, gamma_max[..., None, :], gamma0, T, lnv)
 
 
 def equilibrium_surface_tension(
@@ -195,7 +241,7 @@ def equilibrium_surface_tension(
     return surface_tension_eos(theta, n, gamma_max, gamma0, T, -np.log1p(x.sum(-1)))
 
 
-def dynamic_surface_tension(
+def dst_bracket(
     t: ArrayLike,
     conc: ArrayLike,
     cmc: ArrayLike,
@@ -206,29 +252,27 @@ def dynamic_surface_tension(
     gamma0: ArrayLike,
     beta: ArrayLike | None = None,
     T: float = T0,
-) -> np.ndarray:
-    """Dynamic surface tension γ(t) (N/m) at surface ages ``t`` (s), shape (..., T).
+) -> tuple[np.ndarray, np.ndarray]:
+    """Bracket (dst_low, dst_high) on dynamic surface tension (N/m) at ages ``t`` (s), (..., T).
 
-    Γ_i(t) from adsorbed_amount; φ_i = Γ_i(t)/Γ∞,i = θ_i·r_i fed into surface_tension_eos,
-    with ln(1 − Σφ) = ln(1 + ΣK_i·c_i·(1 − r_i)) − ln(1 + ΣK_j·c_j). t = ∞ gives γ_eq, t = 0
-    gives γ0. Micelle breakdown is ignored: above CMC_mix only free monomer diffuses, so γ(t)
-    is over-predicted at short times (a conservative upper estimate of DST). The short-time
-    Ward–Tordai limit ignores back-diffusion, which under-predicts γ(t) at intermediate times;
-    see docs/physics.md.
-    Ref: Ward & Tordai (1946); Eastoe & Dalton (2000); Fainerman et al. (2002).
+    Both share Γ_i,eq = θ_i·Γ∞,i (θ from the equilibrium free monomer) and the same EOS.
+    dst_low: adsorbed_short_time with c_i = TOTAL C_i. Micelles act as instantly available
+    monomer and there is no back-diffusion, so adsorption is too fast and DST is under-predicted.
+    dst_high: adsorbed_sutherland with c_i = free monomer. Micelles contribute nothing and the
+    secant linear isotherm overstates back-diffusion, so DST is over-predicted.
+    dst_low ≤ dst_high since Γ_low ≥ Γ_high component-wise and γ is non-increasing in every φ_i.
+    t = 0 → γ0; t = ∞ → γ_eq for both.
+    Ref: Ward & Tordai (1946); Sutherland (1952); Eastoe & Dalton (2000).
     """
     t = np.atleast_1d(np.asarray(t, float))
     c = free_monomer(conc, cmc, beta)
     x = np.asarray(K) * c
-    theta = langmuir_coverage(c, K)
     gamma_max = np.asarray(gamma_max, float)
-    G = adsorbed_amount(t, c, D, theta, gamma_max)
-    sat = (theta * gamma_max)[..., None, :]
-    with np.errstate(invalid="ignore", divide="ignore"):
-        r = np.where(sat > 0, G / sat, 1.0)
-    lnv = np.log1p((x[..., None, :] * (1.0 - r)).sum(-1)) - np.log1p(x.sum(-1, keepdims=True))
-    n = np.asarray(n)[..., None, :]
-    return surface_tension_eos(theta[..., None, :] * r, n, gamma_max[..., None, :], gamma0, T, lnv)
+    g_eq = langmuir_coverage(c, K) * gamma_max
+    args = (g_eq, x, n, gamma_max, gamma0, T)
+    low = _dynamic_eos(adsorbed_short_time(t, conc, D, g_eq), *args)
+    high = _dynamic_eos(adsorbed_sutherland(t, c, D, g_eq), *args)
+    return low, high
 
 
 # Le Bas increments, cm³/mol (Poling, Prausnitz & O'Connell 2001, ch. 4).
@@ -321,7 +365,28 @@ class SurfactantArrays:
         )
 
 
-def monte_carlo_gamma(
+def truncated_normal(mean: ArrayLike, sigma: ArrayLike, lower: float, u: ArrayLike) -> np.ndarray:
+    """Draw from N(mean, σ²) truncated to [lower, ∞) by inversion, given uniforms u ∈ [0, 1).
+
+    x = mean + σ·Φ⁻¹(Φ(a) + u·(1 − Φ(a))), a = (lower − mean)/σ; σ = 0 returns mean.
+    Ref: Devroye, Non-Uniform Random Variate Generation (1986), ch. 2 (inversion method).
+    """
+    mean, sigma = np.asarray(mean, float), np.asarray(sigma, float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        p = ndtr((lower - mean) / sigma)
+        return np.where(sigma > 0, mean + sigma * ndtri(p + np.asarray(u) * (1.0 - p)), mean)
+
+
+class DSTStats(NamedTuple):
+    """Monte Carlo mean and std (σ_model included) of each DST bound, N/m, shape (B, T)."""
+
+    low_mean: np.ndarray
+    low_std: np.ndarray
+    high_mean: np.ndarray
+    high_std: np.ndarray
+
+
+def monte_carlo_dst(
     t: ArrayLike,
     idx: ArrayLike,
     conc: ArrayLike,
@@ -329,26 +394,29 @@ def monte_carlo_gamma(
     beta: ArrayLike | None = None,
     n_draws: int = 200,
     seed: int = 0,
+    sigma_model: float = config.SIGMA_MODEL,
     T: float = T0,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Mean and std of γ(t) (N/m), each of shape (B, T), over property uncertainty.
+) -> DSTStats:
+    """Monte Carlo mean and std of dst_low and dst_high (N/m), each (B, T).
 
     Blends: ``idx`` (B, k) surfactant indices into ``props`` and ``conc`` (B, k) mol/m³
     (zero-padded allowed); ``beta`` is an optional (S, S) pairwise matrix; t = ∞ gives γ_eq.
-    Per draw: log10 CMC ~ N(log10 CMC, σ_log10²), γ_CMC ~ N(γ_CMC, σ²) clipped to [0, γ0],
-    Γ_max ~ N(Γ_max, σ²) floored at GAMMA_MAX_FLOOR; K is re-derived per draw. The same draws
-    are shared by all blends (common random numbers).
-    Ref: Szyszkowski (1908); Ward & Tordai (1946); see dynamic_surface_tension.
+    Per draw: log10 CMC ~ N(log10 CMC, σ_log10²) (log-normal CMC); γ_CMC ~ N(γ_CMC, σ²);
+    Γ_max ~ N(Γ_max, σ²) truncated at GAMMA_MAX_FLOOR; K is re-derived per draw. The same draws
+    are shared by all blends (common random numbers). Reported std = sqrt(std_MC² + σ_model²).
+    Ref: Szyszkowski (1908); Sutherland (1952); Ward & Tordai (1946); see dst_bracket.
     """
     idx, conc = np.asarray(idx), np.asarray(conc, float)
-    z = np.random.default_rng(seed).standard_normal((3, n_draws, props.cmc.size))
+    rng = np.random.default_rng(seed)
+    z = rng.standard_normal((2, n_draws, props.cmc.size))
+    u = rng.uniform(size=(n_draws, props.cmc.size))
     g0 = gamma_water(T)
     cmc = props.cmc * 10.0 ** (props.cmc_sigma_log10 * z[0])
-    gamma_cmc = np.clip(props.gamma_cmc + props.gamma_cmc_sigma * z[1], 0.0, g0)
-    gamma_max = np.maximum(props.gamma_max + props.gamma_max_sigma * z[2], GAMMA_MAX_FLOOR)
+    gamma_cmc = props.gamma_cmc + props.gamma_cmc_sigma * z[1]
+    gamma_max = truncated_normal(props.gamma_max, props.gamma_max_sigma, GAMMA_MAX_FLOOR, u)
     K = szyszkowski_K(cmc, gamma_cmc, gamma_max, props.n, g0, T)
     beta_b = None if beta is None else np.asarray(beta)[idx[..., :, None], idx[..., None, :]]
-    g = dynamic_surface_tension(
+    low, high = dst_bracket(
         t,
         conc,
         cmc[:, idx],
@@ -360,4 +428,8 @@ def monte_carlo_gamma(
         beta_b,
         T,
     )
-    return g.mean(0), g.std(0)
+
+    def std(g: np.ndarray) -> np.ndarray:
+        return np.sqrt(g.var(0) + sigma_model**2)
+
+    return DSTStats(low.mean(0), std(low), high.mean(0), std(high))

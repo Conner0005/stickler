@@ -13,11 +13,20 @@ N_CANDIDATES = 40  # demo candidates to select (30–50)
 # pCMC and pC20 in log10 units, AW_ST_CMC in mN/m, Gamma_max in µmol/m².
 MEASURED_SIGMA = {"pCMC": 0.05, "AW_ST_CMC": 1.0, "Gamma_max": 0.3, "pC20": 0.1}
 
-# Test-set RMSE of the SurfPro ensemble that produced surfpro_imputed.csv
-# (Hödl et al., Digital Discovery 2025, 4, 1176), same units as MEASURED_SIGMA.
-# PENDING: the paper could not be fetched (publisher blocks automated access).
-# While None, imputed σ falls back to the per-entry ensemble std in surfpro_imputed.csv.
-SURFPRO_TEST_RMSE: dict[str, float] | None = None
+# σ for imputed values: test-set RMSE of the AttentiveFP_all64d ensemble that produced
+# surfpro_imputed.csv (Hödl et al., Digital Discovery 2025, 4, 1176, Table 3; values supplied
+# by the user from the paper), same units as MEASURED_SIGMA. None would fall back to the
+# per-entry ensemble std in surfpro_imputed.csv.
+SURFPRO_TEST_RMSE: dict[str, float] | None = {
+    "pCMC": 0.358,
+    "AW_ST_CMC": 3.52,
+    "Gamma_max": 0.84,
+    "pC20": 0.39,
+}
+
+# ASSUMPTION: model-form error of the DST/γ_eq predictions, added in quadrature to the
+# Monte Carlo std (N/m).
+SIGMA_MODEL = 2e-3
 
 # Gibbs prefactor n in γ = γ0 − nRTΓ∞·ln(1 + Kc), by schema ionic class:
 # 1 for neutral species, 2 for 1:1 ionic surfactants without added salt.

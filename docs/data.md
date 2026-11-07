@@ -20,7 +20,7 @@ The paper's own licence is unconfirmed: the publisher and the Radboud repository
 | file | content |
 |---|---|
 | `data/surfpro_literature.csv` | measured values with per-property DOIs (`Ref_*`), `Temp_Celsius`, `InChIKey`, `Molecular_Weight` |
-| `data/surfpro_imputed.csv` | every property for train+test structures (1476 rows, no `mixture`); missing values filled with predictions from the 10-fold AttentiveFP ensemble (`params.yaml`: task `all`, AttentiveFP-96d), `<prop>_std` = ensemble std |
+| `data/surfpro_imputed.csv` | every property for train+test structures (1476 rows, no `mixture`); missing values filled with predictions from the 10-fold AttentiveFP_all64d ensemble (paper, Table 3; the repo's `params.yaml` shows the last run config, AttentiveFP-96d); `<prop>_std` = ensemble std |
 
 ## Units (confirmed from the repo; the paper could not be fetched)
 
@@ -44,7 +44,8 @@ Caveats found while checking:
 2. Keep 20 ≤ `Temp_Celsius` ≤ 30; rows with a blank temperature are dropped.
 3. Deduplicate by InChIKey (median). SurfProV2 has no duplicate InChIKeys, so this step changes nothing today.
 4. Each property uses the measured value if one exists, otherwise the imputed value. Every value records `_measured` and `_source` (DOI, or the imputed-DB citation).
-5. σ: measured values use `config.MEASURED_SIGMA`, an *assumption*: pCMC 0.05, γ 1.0 mN/m, Γ 0.3 µmol/m², pC20 0.1. Imputed values use the paper's test-set RMSE (`config.SURFPRO_TEST_RMSE`), which is **pending**. Until it is filled in, imputed σ is the per-entry ensemble std (γ_CMC 2.0–3.8 mN/m in the current selection).
+5. σ: measured values use `config.MEASURED_SIGMA`, an *assumption*: pCMC 0.05, γ 1.0 mN/m, Γ 0.3 µmol/m², pC20 0.1. Imputed values use the test-set RMSE of the AttentiveFP_all64d ensemble (paper, Table 3; values supplied by the user, since the paper could not be fetched here): pCMC 0.358, γ_CMC 3.52 mN/m, Γ_max 0.84 µmol/m², pC20 0.39 (`config.SURFPRO_TEST_RMSE`).
+   **Caveat:** SurfPro's test set is a random split, stratified only by surfactant type. Structures similar to the test set are well represented in training, so this RMSE probably **understates** the error for agro-like surfactants that are scarce in SurfPro (sulfosuccinates, alkylbenzene sulfonates, trisiloxanes). The candidates in those families have almost every property except CMC imputed.
 6. Family is assigned from RDKit SMARTS, first match wins: siloxane (any Si), sulfosuccinate, alkylbenzene sulfonate, alkyl sulfate (includes ether sulfates), sugar-based (ring or open-chain polyol), alcohol ethoxylate (C/H/O only, non-aromatic), other.
 7. Selection: the six named families count as agro-like unless fluorinated. They are taken round-robin, and within a family entries with more measured properties rank first. 40 candidates are saved to `data/library.parquet`, each with a `reason`.
 

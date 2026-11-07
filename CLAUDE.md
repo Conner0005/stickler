@@ -20,7 +20,7 @@
 ## Layout
 - `src/wetopt/schema.py`: pydantic v2 models (Quantity, Surfactant, Band, Spec, Constraints, Blend, Prediction, Result).
 - `src/wetopt/library.py`: SurfPro → `data/library.parquet` (40 candidates). `config.py`: paths, σ/n/D assumptions. `cli.py`: `wetopt`.
-- `src/wetopt/physics.py`: Szyszkowski + Clint/Rubingh + Ward–Tordai γ_eq/γ(t), Monte Carlo σ; model and assumptions in `docs/physics.md`.
+- `src/wetopt/physics.py`: Szyszkowski + Clint/Rubingh γ_eq; DST bracket (dst_low capped Ward–Tordai, dst_high Sutherland); Monte Carlo σ ⊕ σ_model. See `docs/physics.md`.
 - `tests/` smoke tests · `data/raw/` source data as obtained · `examples/` spec and constraint YAMLs · `docs/data.md` units, licence, provenance.
 - SurfPro is CC BY-NC-SA 4.0 (non-commercial, share-alike); fetch it per `docs/data.md`.
 

@@ -7,14 +7,16 @@ import pytest
 from wetopt import config
 from wetopt.physics import (
     SurfactantArrays,
+    adsorbed_sutherland,
     diffusion_coefficient,
-    dynamic_surface_tension,
+    dst_bracket,
     equilibrium_surface_tension,
     free_monomer,
     gamma_water,
     mixed_cmc,
-    monte_carlo_gamma,
+    monte_carlo_dst,
     szyszkowski_K,
+    truncated_normal,
 )
 
 G0 = gamma_water()
@@ -29,34 +31,45 @@ T_AGES = np.array([0.0, 1e-4, 1e-3, 1e-2, 0.1, 1.0, 10.0, 100.0, np.inf])  # s
 TOL = 1e-12
 
 
-def _gammas(conc, cmc, k_, gmax, n, d):
-    dyn = dynamic_surface_tension(T_AGES, conc, cmc, k_, gmax, n, d, G0)
+def _check_bracket(conc, cmc, k_, gmax, n, d):
+    """Shared checks; returns (low, high) for further assertions."""
+    low, high = dst_bracket(T_AGES, conc, cmc, k_, gmax, n, d, G0)
     eq = equilibrium_surface_tension(conc, cmc, k_, gmax, n, G0)
-    return dyn, eq
+    assert (low <= high + TOL).all()
+    for dyn in (low, high):
+        assert (np.diff(dyn, axis=-1) <= TOL).all()  # non-increasing in t
+        assert ((dyn >= eq[:, None] - TOL) & (dyn <= G0 + TOL)).all()
+        assert np.allclose(dyn[:, 0], G0) and np.allclose(dyn[:, -1], eq)
+    return low, high
 
 
 @pytest.mark.parametrize("i", [0, 1])
-def test_single_monotone_and_bounded(i):
+def test_single_bracket_monotone_and_bounded(i):
     s = slice(i, i + 1)
     conc = CMC[i] * np.logspace(-3, 2, 40)[:, None]
-    dyn, eq = _gammas(conc, CMC[s], K[s], GMAX[s], N[s], D[s])
-    assert (np.diff(dyn, axis=-1) <= TOL).all()  # non-increasing in t
-    assert (np.diff(dyn, axis=0) <= TOL).all()  # non-increasing in concentration
-    assert ((dyn >= eq[:, None] - TOL) & (dyn <= G0 + TOL)).all()
-    assert np.allclose(dyn[:, 0], G0) and np.allclose(dyn[:, -1], eq)
+    for dyn in _check_bracket(conc, CMC[s], K[s], GMAX[s], N[s], D[s]):
+        assert (np.diff(dyn, axis=0) <= TOL).all()  # non-increasing in concentration
 
 
-def test_binary_monotone_and_bounded():
+def test_binary_bracket_monotone_and_bounded():
     alpha = np.array([0.7, 0.3])
     cmc_mix = mixed_cmc(alpha, CMC)
     conc = cmc_mix * np.logspace(-3, 2, 40)[:, None] * alpha
-    dyn, eq = _gammas(conc, CMC, K, GMAX, N, D)
-    assert (np.diff(dyn, axis=-1) <= TOL).all()
-    assert ((dyn >= eq[:, None] - TOL) & (dyn <= G0 + TOL)).all()
     # Monotone in concentration up to CMC_mix; above it, micelles can deplete the more
     # surface-active monomer (documented in docs/physics.md).
     below = conc.sum(-1) <= cmc_mix
-    assert (np.diff(dyn[below], axis=0) <= TOL).all()
+    for dyn in _check_bracket(conc, CMC, K, GMAX, N, D):
+        assert (np.diff(dyn[below], axis=0) <= TOL).all()
+
+
+def test_sutherland_limits():
+    c, d, g_eq = np.array([0.5]), np.array([4e-10]), np.array([2e-6])
+    tau = (g_eq / c) ** 2 / d
+    short = tau * 1e-10
+    ward_tordai = 2 * c * np.sqrt(d * short / np.pi)
+    assert np.allclose(adsorbed_sutherland(short, c, d, g_eq)[..., 0], ward_tordai, rtol=1e-4)
+    long = adsorbed_sutherland(np.r_[tau * 1e10, np.inf], c, d, g_eq)[:, 0]
+    assert np.allclose(long, g_eq, rtol=1e-4) and long[-1] == g_eq[0]
 
 
 def test_single_at_cmc_gives_gamma_cmc():
@@ -99,10 +112,16 @@ def test_monte_carlo_std_vanishes_with_sigma():
     idx = np.array([[0, 1], [0, 0], [1, 1]])
     conc = np.array([[2.0, 0.05], [4.0, 0.0], [0.2, 0.0]])
     t = np.array([0.01, 0.1, np.inf])
-    stds = [monte_carlo_gamma(t, idx, conc, _props(s))[1] for s in (1.0, 0.1, 0.01, 0.0)]
-    assert stds[0].shape == (3, 3)
-    assert (stds[0] > stds[1]).all() and (stds[1] > stds[2]).all()
-    assert (stds[3] < 1e-12).all()
+    for bound in ("low_std", "high_std"):
+        runs = [
+            monte_carlo_dst(t, idx, conc, _props(s), sigma_model=0.0) for s in (1, 0.1, 0.01, 0)
+        ]
+        stds = [getattr(r, bound) for r in runs]
+        assert stds[0].shape == (3, 3)
+        assert (stds[0] > stds[1]).all() and (stds[1] > stds[2]).all()
+        assert (stds[3] < 1e-12).all()
+    # σ_model is added in quadrature.
+    assert np.allclose(monte_carlo_dst(t, idx, conc, _props(0)).high_std, config.SIGMA_MODEL)
 
 
 def test_diffusion_and_library_monte_carlo():
@@ -113,6 +132,9 @@ def test_diffusion_and_library_monte_carlo():
     assert (props.D_assumed == (lib["family"] == "siloxane")).all()
     idx = np.array([[0, 1, 2], [3, 4, 5]])
     conc = np.full((2, 3), 0.5)
-    mean, std = monte_carlo_gamma([0.01, 0.1, np.inf], idx, conc, props)
-    assert np.isfinite(mean).all() and np.isfinite(std).all()
-    assert ((mean > 0.015) & (mean < G0)).all()
+    stats = monte_carlo_dst([0.01, 0.1, np.inf], idx, conc, props)
+    assert all(np.isfinite(a).all() for a in stats)
+    assert (stats.low_mean <= stats.high_mean + TOL).all()
+    assert ((stats.low_mean > 0.015) & (stats.high_mean < G0)).all()
+    u = np.random.default_rng(2).uniform(size=1000)
+    assert (truncated_normal(np.full(1000, 1.5e-7), 1e-6, 1e-7, u) >= 1e-7).all()
