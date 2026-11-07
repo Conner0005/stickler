@@ -26,13 +26,12 @@ def test_page_renders(page):
     assert not at.exception, page
 
 
-def test_optimiser_cereal_preset():
+def test_optimiser_default_answers():
     at = AppTest.from_function(_render, args=("optimiser_page",), default_timeout=120).run()
-    assert at.sidebar.selectbox[0].value == "cereal"
-    assert at.sidebar.multiselect(key="cereal:markets").value == ["EU", "GB", "US", "Global"]
+    assert not at.exception and len(at.sidebar.header) == 5
     assert any("Data-quality exclusions: 1" in e.label for e in at.expander)
-    at.button[0].click().run()
+    at.sidebar.button[0].click().run()  # Find recipe
     assert not at.exception
-    outcome = at.session_state["run"][0]
+    outcome = at.session_state["run"]["o"]
     assert outcome.result is not None and outcome.result.k == 1
     assert any("water alone" in el.value for el in at.success)
