@@ -98,47 +98,54 @@ def _carbon_group(mol: Chem.Mol, start: int, stop: set[int], saturated: bool) ->
     return len(seen)
 
 
-def _starts_ethoxylate(mol: Chem.Mol, o_idx: int, from_idx: int) -> bool:
-    """True if the ether O at ``o_idx`` (reached from ``from_idx``) starts O–CH2–CH2–O…."""
-    o = mol.GetAtomWithIdx(o_idx)
-    nbs = [a for a in o.GetNeighbors() if a.GetIdx() != from_idx]
-    if len(nbs) != 1:
-        return False
-    c1 = nbs[0]
-    if c1.GetSymbol() != "C" or c1.GetTotalNumHs() != 2 or c1.GetIsAromatic():
-        return False
-    c2s = [a for a in c1.GetNeighbors() if a.GetIdx() != o_idx and a.GetSymbol() == "C"]
-    return any(
-        c2.GetTotalNumHs() == 2
-        and any(a.GetSymbol() == "O" and a.GetIdx() != c1.GetIdx() for a in c2.GetNeighbors())
-        for c2 in c2s
-    )
+def _eo_chain_to_oh(mol: Chem.Mol, o_idx: int, from_idx: int) -> bool:
+    """True if the aryl-ether O at ``o_idx`` (reached from ring atom ``from_idx``) starts a pure
+    –(CH2CH2O)n–H chain, n ≥ 1, ending in a free –OH (no PO units, cap, sulfate or phosphate)."""
+    prev, o, units = from_idx, mol.GetAtomWithIdx(o_idx), 0
+    while True:
+        nbs = [x for x in o.GetNeighbors() if x.GetIdx() != prev]
+        if not nbs:  # terminal O
+            return units >= 1 and o.GetTotalNumHs() == 1
+        c1 = nbs[0]
+        if len(nbs) != 1 or c1.GetSymbol() != "C" or c1.GetTotalNumHs() != 2 or c1.GetDegree() != 2:
+            return False
+        c2 = next(x for x in c1.GetNeighbors() if x.GetIdx() != o.GetIdx())
+        if c2.GetSymbol() != "C" or c2.GetTotalNumHs() != 2 or c2.GetDegree() != 2:
+            return False
+        nxt = next(x for x in c2.GetNeighbors() if x.GetIdx() != c1.GetIdx())
+        if nxt.GetSymbol() != "O":
+            return False
+        prev, o, units = c2.GetIdx(), nxt, units + 1
 
 
-def alkylphenol_chains(smiles: str) -> set[int]:
-    """Carbon counts of acyclic alkyl substituents on benzene rings that also carry an O
-    (phenol/phenolate, or aryl ether whose chain is (CH2CH2O)n)."""
+def alkylphenol_units(smiles: str) -> set[tuple[int, str]]:
+    """(alkyl carbons, O type) for each benzene ring carrying an O substituent and an acyclic
+    alkyl substituent. O type: 'phenol' (free OH or phenolate), 'eo_oh' (pure (CH2CH2O)n
+    ending in a free –OH), or 'other' (PO or mixed EO/PO chains, caps, sulfate or phosphate
+    ends, esters)."""
     mol = _ion(smiles)
-    found: set[int] = set()
+    found: set[tuple[int, str]] = set()
     for ring in mol.GetRingInfo().AtomRings():
         atoms = [mol.GetAtomWithIdx(i) for i in ring]
         if len(ring) != 6 or not all(a.GetSymbol() == "C" and a.GetIsAromatic() for a in atoms):
             continue
-        ring_set, has_o, chains = set(ring), False, set()
+        ring_set, o_types, chains = set(ring), set(), set()
         for a in atoms:
             for nb in a.GetNeighbors():
                 if nb.GetIdx() in ring_set:
                     continue
-                if nb.GetSymbol() == "O" and nb.GetDegree() == 1:  # phenol / phenolate
-                    has_o = True
-                elif nb.GetSymbol() == "O" and _starts_ethoxylate(mol, nb.GetIdx(), a.GetIdx()):
-                    has_o = True
+                if nb.GetSymbol() == "O":
+                    if nb.GetDegree() == 1:
+                        o_types.add("phenol")
+                    elif _eo_chain_to_oh(mol, nb.GetIdx(), a.GetIdx()):
+                        o_types.add("eo_oh")
+                    else:
+                        o_types.add("other")
                 elif nb.GetSymbol() == "C":
                     n = _carbon_group(mol, nb.GetIdx(), ring_set, saturated=True)
                     if n is not None:
                         chains.add(n)
-        if has_o:
-            found |= chains
+        found |= {(n, t) for n in chains for t in o_types}
     return found
 
 
@@ -266,11 +273,12 @@ def pfas_acid_classes(smiles: str) -> set[str]:
 def structure_classes(smiles: str) -> dict[str, str]:
     """Classes found by structure → method label."""
     out: dict[str, str] = {}
-    chains = alkylphenol_chains(smiles)
-    if 9 in chains:
-        out["nonylphenol_family"] = "structure"
-    if 8 in chains:
-        out["octylphenol_family"] = "structure"
+    family = {9: "nonylphenol_family", 8: "octylphenol_family"}
+    for n, o_type in alkylphenol_units(smiles):
+        if n in family and o_type in ("phenol", "eo_oh"):  # named in Annex III / REACH 46
+            out[family[n]] = "structure"
+        elif n in family:  # carries the unit, but not a named form
+            out["alkylphenol_derivative"] = "structure"
     if is_tallow_amine_ethoxylate(smiles):
         out["tallow_amine_ethoxylate"] = f"structure ({PATTERN_ONLY})"
     for c in pfas_acid_classes(smiles):
@@ -342,37 +350,35 @@ def flags_for(
 
 
 def screen(lib: pd.DataFrame, markets: list[str], regs: Regulations | None = None) -> pd.DataFrame:
-    """Per-candidate flags for the selected markets: name, flags, blocking markets, labels."""
+    """Per-candidate flags for the selected markets (columns: name, flags)."""
     regs = regs or load()
     cas_col = lib["cas"] if "cas" in lib else pd.Series([None] * len(lib), index=lib.index)
-    rows = []
-    for name, smiles, cas in zip(lib["name"], lib["smiles"], cas_col, strict=True):
-        fl = flags_for(smiles, cas if isinstance(cas, str) else None, markets, regs)
-        blocking = sorted({f.market for f in fl if f.status in BLOCKING})
-        rows.append(
-            {
-                "name": name,
-                "flags": fl,
-                "blocking": blocking,
-                "labels": sorted({f.label for f in fl}),
-            }
-        )
-    return pd.DataFrame(rows, columns=["name", "flags", "blocking", "labels"])
+    rows = [
+        {
+            "name": name,
+            "flags": flags_for(smiles, cas if isinstance(cas, str) else None, markets, regs),
+        }
+        for name, smiles, cas in zip(lib["name"], lib["smiles"], cas_col, strict=True)
+    ]
+    return pd.DataFrame(rows, columns=["name", "flags"])
 
 
-def removal_summary(screened: pd.DataFrame, markets: list[str]) -> list[str]:
+def excluded_statuses(policy: str) -> frozenset[str]:
+    """Statuses that remove a candidate: exclude → BLOCKING; strict → + 'check'; warn → none."""
+    return {"exclude": BLOCKING, "strict": BLOCKING | {"check"}, "warn": frozenset()}[policy]
+
+
+def removal_summary(
+    screened: pd.DataFrame, markets: list[str], statuses: frozenset[str] = BLOCKING
+) -> list[str]:
     """E.g. '3 candidates excluded for EU: octylphenol and its ethoxylates'."""
     out = []
     for m in markets:
-        hit = screened[screened["blocking"].map(lambda b, m=m: m in b)]
-        if len(hit):
-            labels = sorted(
-                {
-                    f.label
-                    for fl in hit["flags"]
-                    for f in fl
-                    if f.market == m and f.status in BLOCKING
-                }
-            )
-            out.append(f"{len(hit)} candidates excluded for {m}: {', '.join(labels)}")
+        labels, n = set(), 0
+        for fl in screened["flags"]:
+            hit = {f.label for f in fl if f.market == m and f.status in statuses}
+            n += bool(hit)
+            labels |= hit
+        if n:
+            out.append(f"{n} candidates excluded for {m}: {', '.join(sorted(labels))}")
     return out

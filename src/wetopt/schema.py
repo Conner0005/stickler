@@ -101,8 +101,10 @@ class Constraints(BaseModel):
     allowed_classes: list[IonicClass] = list(get_args(IonicClass))
     excluded_ids: list[str] = []
     markets: list[Market] = list(get_args(Market))
-    policy: Literal["exclude", "warn"] = Field(
-        "exclude", description="exclude: drop not_permitted/restricted/eliminated; warn: flag only"
+    policy: Literal["exclude", "warn", "strict"] = Field(
+        "exclude",
+        description="exclude: drop not_permitted/restricted/eliminated; strict: also drop 'check'; "
+        "warn: flag only",
     )
 
 

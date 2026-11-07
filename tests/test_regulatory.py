@@ -14,6 +14,13 @@ C12E5 = "CCCCCCCCCCCCOCCOCCOCCOCCOCCO"
 NA_PFOA = "O=C([O-])C(F)(F)C(F)(F)C(F)(F)C(F)(F)C(F)(F)C(F)(F)C(F)(F)F.[Na+]"
 C18_AMINE_2EO = "CCCCCCCCCCCCCCCCCCN(CCOCCO)CCOCCO"
 DECYLPHENOL = "CCCCCCCCCCc1ccc(O)cc1"
+NP_PO_SULFATES = [  # the three SurfPro candidates (nonylphenol propoxylate sulfates)
+    "CCCCCCCCCc1ccc(OCC(C)OCC(C)OCC(C)OS(=O)(=O)[O-])cc1.[Na+]",
+    "CCCCCCCCCc1ccc(OCC(C)OCC(C)OCC(C)OCC(C)OCC(C)OCC(C)OS(=O)(=O)[O-])cc1.[Na+]",
+    "CCCCCCCCCc1ccc(" + "OCC(C)" * 9 + "OS(=O)(=O)[O-])cc1.[Na+]",
+]
+NP9EO_SULFATE = "CCCCCCCCCc1ccc(OCCOCCOCCOCCOCCOCCOCCOCCOCCOS(=O)(=O)[O-])cc1.[Na+]"
+OP_PROPOXYLATE = "CC(C)(C)CC(C)(C)c1ccc(OCC(C)OCC(C)OCC(C)O)cc1"
 
 
 def hits(smiles):
@@ -42,3 +49,24 @@ def test_policy_exclude_reports_removed():
     assert "NPE" not in o.result.blend.root and "not legal advice" in o.result.regulatory_note
     warn = optimise(lib, sp, Constraints(max_k=2, max_total_wv=0.1, markets=["EU"], policy="warn"))
     assert warn.regulatory_removed == []
+
+
+def test_alkylphenol_check_tier():
+    check = [("EU", "check"), ("GB", "check")]
+    for smi in NP_PO_SULFATES:
+        assert hits(smi) == check
+    assert hits(NP9EO) == [("EU", "not_permitted"), ("EU", "restricted"), ("GB", "not_permitted")]
+    assert hits(NP9EO_SULFATE) == check
+    assert hits(OP_PROPOXYLATE) == check
+
+
+def test_policy_strict_also_excludes_check():
+    nps = toy_library().iloc[[2]].assign(name="NPPS", inchikey="NPPS", smiles=NP_PO_SULFATES[0])
+    lib = pd.concat([toy_library(), nps], ignore_index=True)
+    sp = Spec.model_validate({"bands": [DST100, EQ40]})
+    cons = {"max_k": 2, "max_total_wv": 0.1, "markets": ["EU"]}
+    assert optimise(lib, sp, Constraints(**cons)).regulatory_removed == []
+    strict = optimise(lib, sp, Constraints(**cons, policy="strict")).regulatory_removed
+    assert strict == [
+        "1 candidates excluded for EU: nonyl/octylphenol derivatives not named in the rules"
+    ]

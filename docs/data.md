@@ -65,19 +65,23 @@ The filter catches gross data errors, not normal model error. Current library: 2
 This is a hardcoded snapshot (as_of 2026-11-07) and **not legal advice**; the disclaimer in the
 YAML is shown wherever flags appear. Each ingredient is classified by listed CAS and by RDKit
 structure, never by name:
-- nonylphenol/octylphenol family: a benzene ring with a phenol O or an O–(CH2CH2O)n ether, plus an acyclic alkyl substituent of exactly 9/8 C.
+- nonylphenol/octylphenol family (not_permitted/restricted): a benzene ring with an acyclic alkyl substituent of exactly 9/8 C and either a free phenol OH or a pure (CH2CH2O)n chain ending in a free –OH. These are the forms Annex III entries 56–139 and REACH entry 46 name.
+- alkylphenol_derivative (**check**, EU and GB): any other structure carrying that nonyl/octylphenol unit (PO or mixed EO/PO chains, capped, sulfated or phosphated ends, esters).
 - tallow amine ethoxylate: a pattern match only, to be confirmed by CAS.
 - PFAS (OECD 2021), PFOS/PFHxS (C8/C6 sulfonate), PFOA (C7F15COO) and long-chain PFCAs (CnF2n+1COO, 8 ≤ n ≤ 20, as defined in Stockholm decision SC-12/12).
 
-`Constraints.markets` (EU, GB, US, Global) and `policy` (exclude | warn): with exclude, anything
-not_permitted, restricted or eliminated in a selected market is removed before the search;
-'check' only warns.
-Rule hits: 0 of the 40 library candidates. Of the 528 SurfPro surfactants (default types,
-20–30 °C) the hits are EU Annex III 18, REACH Annex XVII entry 46 3, GB 18, PFOS 1, PFOA 4,
-PFHxS 0, LC-PFCA 1, US PFAS check 39.
-**Known gap:** the library holds three nonylphenol *propoxylate* sulfates (C24H41NaO7S,
-C33H59NaO10S, C42H77NaO13S). The nonylphenol rule as specified requires an (CH2CH2O)n chain or a
-free phenol, so they are not flagged. Check whether Annex III entries 56–81 cover them before
-using them.
+`Constraints.markets` (EU, GB, US, Global) and `policy`:
+- exclude (default): removes anything not_permitted, restricted or eliminated in a selected market before the search.
+- strict: also removes 'check' flags.
+- warn: flags only.
+
+Rule hits over the 40 library candidates, all markets: only `eu_alkylphenol_check` and
+`gb_alkylphenol_check`, 3 each. These are the three nonylphenol propoxylate sulfates
+(C24H41NaO7S, C33H59NaO10S, C42H77NaO13S), which only `strict` removes. Over the 528 SurfPro
+surfactants (default types, 20–30 °C): EU Annex III 15, REACH Annex XVII entry 46 3, GB 15,
+alkylphenol check EU 7 and GB 7, PFOS 1, PFOA 4, PFHxS 0, LC-PFCA 1, US PFAS check 39.
+**Resolved gap:** the propoxylate sulfates were previously unflagged. The legal rules are not
+stretched to cover them; they get the 'check' tier with the note "Not named in Annex III or REACH
+entry 46, but contains the nonyl/octylphenol unit those rules target; confirm before use."
 
 Names: `CnEm` for linear alcohol ethoxylates, otherwise the molecular formula, with ` #k` added when isomers share a formula. SurfPro has no common names.

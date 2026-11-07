@@ -17,6 +17,7 @@ class_labels:
   pfhxs: PFHxS, its salts
   lc_pfca: long-chain PFCAs (C9-C21), their salts
   pfas_any: PFAS (OECD 2021 definition)
+  alkylphenol_derivative: nonyl/octylphenol derivatives not named in the rules
 
 # Class of each CAS number listed in the rules (classification by CAS when known).
 cas_classes:
@@ -74,6 +75,24 @@ rules:
       Reg. (EU) 2021/383 list)
     classes: *annex3_classes
     cas: *annex3_cas
+    source: https://www.hse.gov.uk/pesticides/active-substances/unacceptable-co-formulants.htm
+  - id: eu_alkylphenol_check
+    region: EU
+    status: check
+    rule: >-
+      Not named in Annex III or REACH entry 46, but contains the nonyl/octylphenol unit those
+      rules target; confirm before use
+    classes: [alkylphenol_derivative]
+    cas: []
+    source: https://eur-lex.europa.eu/eli/reg/2021/383/oj/eng
+  - id: gb_alkylphenol_check
+    region: GB
+    status: check
+    rule: >-
+      Not named in the HSE unacceptable co-formulant register, but contains the nonyl/octylphenol
+      unit it targets; confirm before use
+    classes: [alkylphenol_derivative]
+    cas: []
     source: https://www.hse.gov.uk/pesticides/active-substances/unacceptable-co-formulants.htm
   - id: pops_pfos
     region: Global

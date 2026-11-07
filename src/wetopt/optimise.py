@@ -435,9 +435,9 @@ def optimise(
         excluded = excluded.iloc[:0]
     regs = regulatory.load()
     screened = regulatory.screen(lib, list(cons.markets), regs)
-    blocking = screened["blocking"].map(bool)
-    blocked = screened[blocking] if cons.policy == "exclude" else screened.iloc[:0]
-    removed = regulatory.removal_summary(blocked, list(cons.markets))
+    statuses = regulatory.excluded_statuses(cons.policy)
+    blocked = screened[screened["flags"].map(lambda fl: any(f.status in statuses for f in fl))]
+    removed = regulatory.removal_summary(blocked, list(cons.markets), statuses)
     note = f"Regulatory snapshot as of {regs.as_of}. {regs.disclaimer}"
     reg_flags = dict(zip(screened["name"], screened["flags"], strict=True))
     drop = frozenset(excluded["name"]) | frozenset(blocked["name"])
