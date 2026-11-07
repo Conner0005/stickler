@@ -10,6 +10,7 @@ the first k with a feasible blend. Band logic (z from the Spec, σ = MC std ⊕ 
 No monotonicity is assumed: γ can rise with concentration above the mixed CMC.
 """
 
+import dataclasses
 import itertools
 import time
 from collections.abc import Callable
@@ -36,9 +37,14 @@ GRID_SPAN = 1e-3  # lowest level as a fraction of the loading cap
 N_REFINE = 20  # subsets refined per k
 DELTA = 5e-5  # N/m (0.05 mN/m) margin buffer while refining
 WV_TO_KG_M3 = 10.0  # 1 % w/v = 10 kg/m³
-SCREEN_CHUNK = 300_000  # blends per nominal-model chunk
-MC_CHUNK = 2_000  # blends per Monte Carlo chunk
-MAX_MC = 20_000  # at max_k, Monte Carlo at most this many screen-passing blends (lowest loading)
+SCREEN_CHUNK = 50_000  # blends per nominal-model chunk (bounds peak memory)
+MC_CHUNK = 500  # blends per Monte Carlo chunk
+MAX_MC = 20_000  # non-exhaustive levels: Monte Carlo at most this many screen-passing blends
+MAX_MC_FAST = 200  # same, in fast mode (exhaustive=False, e.g. the website)
+
+
+class TimeLimit(Exception):
+    """Raised inside a level when the run's deadline has passed."""
 
 
 @dataclass(frozen=True)
@@ -60,6 +66,10 @@ class Problem:
     sigma_model: float  # N/m
     n_draws: int
     allowed: np.ndarray  # indices of searchable candidates (arrays above span the whole library)
+    exhaustive: bool = (
+        True  # Monte Carlo every grid blend below max_k (needed for k − 1 ≥ 1 certificates)
+    )
+    deadline: float | None = None  # time.perf_counter() value after which the search stops
 
 
 def make_problem(
@@ -160,19 +170,26 @@ def band_margins(p: Problem, low, low_std, high, high_std) -> tuple[np.ndarray, 
     return pess, opt
 
 
+def _check_deadline(p: Problem) -> None:
+    if p.deadline is not None and time.perf_counter() > p.deadline:
+        raise TimeLimit
+
+
 def mc_eval(p: Problem, idx: np.ndarray, wv: np.ndarray) -> tuple[DSTStats, np.ndarray, np.ndarray]:
     """Monte Carlo stats and (pessimistic, optimistic) margins for blends, in chunks."""
-    parts = [
-        monte_carlo_dst(
-            p.ages,
-            idx[s : s + MC_CHUNK],
-            conc(p, idx[s : s + MC_CHUNK], wv[s : s + MC_CHUNK]),
-            p.props,
-            n_draws=p.n_draws,
-            sigma_model=p.sigma_model,
+    parts = []
+    for s in range(0, len(idx), MC_CHUNK):
+        _check_deadline(p)
+        parts.append(
+            monte_carlo_dst(
+                p.ages,
+                idx[s : s + MC_CHUNK],
+                conc(p, idx[s : s + MC_CHUNK], wv[s : s + MC_CHUNK]),
+                p.props,
+                n_draws=p.n_draws,
+                sigma_model=p.sigma_model,
+            )
         )
-        for s in range(0, len(idx), MC_CHUNK)
-    ]
     stats = DSTStats(*(np.concatenate(a) for a in zip(*parts, strict=True)))
     return stats, *band_margins(p, *stats)
 
@@ -247,18 +264,19 @@ def search_level(p: Problem, k: int) -> Level | None:
     pess_s = np.empty((len(S), len(G)))
     step = max(1, SCREEN_CHUNK // len(G))
     for s in range(0, len(S), step):
+        _check_deadline(p)
         idx = np.repeat(S[s : s + step], len(G), axis=0)
         wv = np.tile(G, (len(S[s : s + step]), 1))
         low, high = mean_bracket(p, idx, wv)
         pe, _ = band_margins(p, low, p.sigma_model, high, p.sigma_model)
         pess_s[s : s + step] = pe.min(1).reshape(-1, len(G))
 
-    complete = k < p.max_k  # a certificate for this k may be needed later
+    complete = p.exhaustive and k < p.max_k  # a certificate for this k may be needed later
     if complete:
         si, gi = np.divmod(np.arange(pess_s.size), len(G))
     else:  # σ_model ≤ σ, so a blend failing this screen cannot be feasible
         si, gi = np.nonzero(pess_s >= 0)
-        keep = np.argsort(G[gi].sum(1), kind="stable")[:MAX_MC]
+        keep = np.argsort(G[gi].sum(1), kind="stable")[: MAX_MC if p.exhaustive else MAX_MC_FAST]
         si, gi = si[keep], gi[keep]
         if len(si) == 0:  # nothing passes the screen: seed refinement from the best screen points
             best = np.argsort(-pess_s.max(1))[:N_REFINE]
@@ -342,7 +360,10 @@ def certificate(p: Problem, prev: Level | None, k: int, n_candidates: int) -> tu
     assert prev is not None
     who = "single surfactant" if k == 2 else f"{k - 1}-surfactant blend"
     if not prev.complete:
-        msg = f"No certificate: the k = {k - 1} level was not exhaustively classified."
+        msg = (
+            f"No certificate: not every {who} was classified with Monte Carlo σ "
+            "(fast mode); run the exhaustive check for a certificate."
+        )
         return msg, False, msg
     if prev.undetermined.any():
         n_und = int(prev.undetermined.sum())
@@ -436,6 +457,7 @@ class Outcome:
     regulatory_note: str = ""  # disclaimer + snapshot date; show wherever flags appear
     certificate_plain: str = ""  # one plain sentence
     runner_up: dict | None = None  # best (k − 1) blend: {"k", "names", "wv"}; k = 0 is water
+    truncated: str = ""  # set if the time limit stopped the search
 
 
 def optimise(
@@ -446,13 +468,17 @@ def optimise(
     sigma_model: float | None = None,
     exclude_inconsistent: bool = config.EXCLUDE_INCONSISTENT,
     progress: Callable[[float, str], None] | None = None,
+    exhaustive: bool = True,
+    time_limit_s: float | None = None,
 ) -> Outcome:
     """Find the fewest-surfactant feasible blend, then the lowest loading; certify k − 1.
 
     σ_model defaults to max(config.SIGMA_MODEL, pC20-check RMSE over all fully measured
     candidates) (config value if there are none). Candidates flagged INCONSISTENT by
     data_quality are excluded unless ``exclude_inconsistent`` is False. ``progress(fraction,
-    message)`` is called as each k starts and when the search ends.
+    message)`` is called as each k starts and when the search ends. ``exhaustive=False`` (fast
+    mode) runs Monte Carlo only on the top screen-passing and refined blends, so no k − 1 ≥ 1
+    certificate can be issued. ``time_limit_s`` stops the search between chunks.
     """
     t0 = time.perf_counter()
     check = pc20_check(lib)
@@ -471,12 +497,19 @@ def optimise(
     reg_flags = dict(zip(screened["name"], screened["flags"], strict=True))
     drop = frozenset(excluded["name"]) | frozenset(blocked["name"])
     p, cands = make_problem(lib, spec, cons, sigma_model, n_draws, drop)
+    deadline = None if time_limit_s is None else t0 + time_limit_s
+    p = dataclasses.replace(p, exhaustive=exhaustive, deadline=deadline)
     levels: list[Level] = []
     winner_level = None
+    truncated = ""
     for k in range(1, p.max_k + 1):
         if progress:
             progress((k - 1) / p.max_k, f"Searching k = {k} of {p.max_k}…")
-        level = search_level(p, k)
+        try:
+            level = search_level(p, k)
+        except TimeLimit:
+            truncated = f"Time limit ({time_limit_s:g} s) reached while searching k = {k}."
+            break
         if level is None:
             break
         levels.append(level)
@@ -503,8 +536,12 @@ def optimise(
         frames = [_rows(p, lv, np.flatnonzero(lv.undetermined)) for lv in levels]
         und = pd.concat(frames) if frames else pd.DataFrame()
         und = _closest_first(und)
-        text = f"No blend with k ≤ {p.max_k} is feasible under the model."
-        plain = f"No blend with up to {p.max_k} surfactants meets the spec under the model."
+        searched = levels[-1].k if levels else 0
+        text = f"No blend with k ≤ {searched} is feasible under the model."
+        noun = "surfactant" if searched == 1 else "surfactants"
+        plain = f"No blend with up to {searched} {noun} meets the spec under the model."
+        if truncated:
+            text, plain = f"{truncated} {text}", f"{truncated} {plain}"
         done = [lv for lv in levels if lv.complete and lv.failed.all()]
         certified = bool(done)
         if done:  # certify the largest k at which every blend fails
@@ -527,6 +564,7 @@ def optimise(
             note,
             plain,
             _runner_up(p, levels[-1], certified=False) if levels else None,
+            truncated,
         )
 
     lv, k = winner_level, winner_level.k
@@ -581,6 +619,7 @@ def optimise(
         note,
         plain,
         runner,
+        truncated,
     )
 
 
@@ -603,5 +642,6 @@ def outcome_payload(o: Outcome, spec: Spec, cons: Constraints, spec_file: str = 
         "excluded": o.excluded.to_dict("records"),
         "regulatory_removed": o.regulatory_removed,
         "regulatory_note": o.regulatory_note,
+        "truncated": o.truncated,
         "runtime_s": o.runtime_s,
     }

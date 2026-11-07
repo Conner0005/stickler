@@ -1,7 +1,8 @@
-"""wetopt Streamlit app: set a wetting spec, get the fewest-surfactant blend and its certificate.
+"""Optimiser page: set a wetting spec, get the fewest-surfactant blend and its certificate.
 
-Run: uv run streamlit run src/wetopt/app.py
-Built on library.py (data/library.parquet), physics.py and optimise.py; no physics of its own.
+Part of the multipage site (streamlit_app.py → wetopt.site); also runs alone with
+`uv run streamlit run src/wetopt/app.py`. Built on library.py (data/library.parquet),
+physics.py, optimise.py and regulatory.py; no physics of its own.
 Display units (mN/m, ms, % w/v, mM) appear only here.
 """
 
@@ -15,10 +16,11 @@ import streamlit as st
 import yaml
 from pydantic import ValidationError
 
-from wetopt import config
+from wetopt import config, regulatory
 from wetopt import optimise as opt
 from wetopt.physics import SurfactantArrays, gamma_water, monte_carlo_dst
 from wetopt.schema import Constraints, IonicClass, Market, Spec
+from wetopt.validate import INCONSISTENT, data_quality, sigma_model
 
 EXAMPLES = config.ROOT / "examples"
 PROPS = {"cmc": "CMC", "gamma_cmc": "γ_CMC", "gamma_max": "Γ_max", "pc20": "pC20"}
@@ -27,6 +29,8 @@ WINNER, RUNNER = "#2a78d6", "#eb6834"
 WINDOW_FILL = "rgba(137, 135, 129, 0.22)"
 EQ_FILL = "rgba(137, 135, 129, 0.12)"
 AGES_MS = np.geomspace(10, 1000, 41)
+TIME_LIMIT_S = 60  # cap per optimiser run on the website (Community Cloud free tier)
+STATUS_ICON = {"not_permitted": "⛔", "eliminated": "⛔", "restricted": "🚫", "check": "⚠️"}
 
 
 @st.cache_data
@@ -49,20 +53,41 @@ def dst_curves(lib: pd.DataFrame, names: tuple, wv: tuple, sigma_model: float) -
 
 
 @st.cache_data
+def regulatory_flags(lib: pd.DataFrame, markets: tuple[str, ...]) -> dict[str, list]:
+    """Name → regulatory flags in the target markets (regulatory.screen)."""
+    sc = regulatory.screen(lib, list(markets))
+    return dict(zip(sc["name"], sc["flags"], strict=True))
+
+
+@st.cache_data
+def quality_table(lib: pd.DataFrame) -> pd.DataFrame:
+    """Data-quality status and reason per candidate (validate.data_quality at 3·σ_model)."""
+    return data_quality(lib, config.QC_SIGMA_MULT * sigma_model(lib))
+
+
+def badge(flags: list) -> str:
+    """Compact regulatory badge for one ingredient, e.g. '⚠️ EU check · ⚠️ GB check'."""
+    if not flags:
+        return "no flags"
+    return " · ".join(
+        sorted({f"{STATUS_ICON[f.status]} {f.market} {f.status.replace('_', ' ')}" for f in flags})
+    )
+
+
+def badges(names: list[str], flags: dict[str, list]) -> str:
+    return "; ".join(f"{n}: {badge(flags.get(n, []))}" for n in names)
+
+
+@st.cache_data
 def load_presets() -> dict[str, dict]:
     return {p.stem: yaml.safe_load(p.read_text()) for p in sorted(EXAMPLES.glob("*.yaml"))}
 
 
-def sidebar(lib: pd.DataFrame) -> tuple[str, Spec, Constraints, bool] | None:
+def sidebar(lib: pd.DataFrame) -> tuple[str, Spec, Constraints, bool, bool] | None:
     """Spec and constraints from the sidebar; None if they do not validate."""
     sb = st.sidebar
     presets = load_presets()
     preset = sb.selectbox("Preset", [*presets, "custom"])
-    if "tight" not in presets:
-        sb.caption(
-            "No *tight* preset: the γ_eq scan found no spec where a pair beats every single "
-            "surfactant under the current model (docs/physics.md)."
-        )
     base = presets.get(preset) or next(iter(presets.values()))
     spec0, cons0 = base["spec"], base["constraints"]
 
@@ -121,20 +146,36 @@ def sidebar(lib: pd.DataFrame) -> tuple[str, Spec, Constraints, bool] | None:
         step=0.01,
         key=key("z"),
     )
-    with sb.expander("Data quality and regulations"):
-        qc = st.checkbox(
-            "Exclude 'inconsistent source data'", config.EXCLUDE_INCONSISTENT, key=key("qc")
-        )
-        markets = st.multiselect(
-            "Markets",
-            list(get_args(Market)),
-            cons0.get("markets", list(get_args(Market))),
-            key=key("markets"),
-        )
-        policies = ["exclude", "strict", "warn"]
-        policy = st.selectbox(
-            "Policy", policies, policies.index(cons0.get("policy", "exclude")), key=key("policy")
-        )
+    sb.subheader("Regulatory")
+    markets = sb.multiselect(
+        "Target markets",
+        list(get_args(Market)),
+        cons0.get("markets", list(get_args(Market))),
+        key=key("markets"),
+    )
+    exclude = sb.toggle(
+        "Exclude non-compliant ingredients",
+        cons0.get("policy", "exclude") != "warn",
+        key=key("exclude"),
+        help="On: drop anything not permitted, restricted or eliminated in a target market "
+        "before the search. Off: keep everything and show warnings.",
+    )
+    strict = exclude and sb.checkbox(
+        "Also exclude 'check' flags (strict)", cons0.get("policy") == "strict", key=key("strict")
+    )
+    policy = "strict" if strict else ("exclude" if exclude else "warn")
+
+    sb.subheader("Data quality and run")
+    qc = sb.checkbox(
+        "Exclude 'inconsistent source data'", config.EXCLUDE_INCONSISTENT, key=key("qc")
+    )
+    exhaustive = sb.checkbox(
+        "Exhaustive certificate check (slower)",
+        False,
+        key=key("exhaustive"),
+        help="Classify every smaller blend with Monte Carlo σ. Needed for a certificate "
+        f"beyond k − 1 = 0; may hit the {TIME_LIMIT_S} s run limit.",
+    )
     try:
         spec = Spec.model_validate({"bands": bands, "z": z})
         cons = Constraints(
@@ -148,7 +189,7 @@ def sidebar(lib: pd.DataFrame) -> tuple[str, Spec, Constraints, bool] | None:
     except ValidationError as err:
         sb.error(f"Spec is not valid: {err.errors()[0]['msg']}")
         return None
-    return preset, spec, cons, qc
+    return preset, spec, cons, qc, exhaustive
 
 
 def provenance(lib: pd.DataFrame, names: list[str]) -> str:
@@ -263,6 +304,7 @@ def dst_figure(lib: pd.DataFrame, o: opt.Outcome, spec: Spec) -> go.Figure:
 
 def show(lib: pd.DataFrame, o: opt.Outcome, spec: Spec, cons: Constraints, preset: str) -> None:
     r = o.result
+    flags = regulatory_flags(lib, tuple(cons.markets))
     with st.container(border=True):
         if r is None:
             st.subheader("No feasible blend")
@@ -278,14 +320,17 @@ def show(lib: pd.DataFrame, o: opt.Outcome, spec: Spec, cons: Constraints, prese
                     "surfactant": top["names"],
                     "% w/v": [round(w, 4) for w in top["wv"]],
                     "mM": [round(c, 3) for c in r.blend.root.values()],
+                    "regulatory": [badge(flags.get(n, [])) for n in top["names"]],
                 }
             )
             st.dataframe(comp, hide_index=True)
-            for name, flags in r.regulatory_flags.items():
-                for f in flags:
-                    st.warning(f"{name}: {f}")
-        for _, row in o.excluded.iterrows():
-            st.caption(f"Excluded {row['name']}: inconsistent source data ({row['reason']}).")
+            details = [f"{n}: {t}" for n, ts in r.regulatory_flags.items() for t in ts]
+            if details:
+                with st.expander("Regulatory flags on the winner"):
+                    for line in details:
+                        st.markdown(f"- {line}")
+        if o.truncated:
+            st.warning(o.truncated)
         for line in o.regulatory_removed:
             st.caption(f"Regulatory: {line}.")
         st.caption(o.regulatory_note)
@@ -307,12 +352,27 @@ def show(lib: pd.DataFrame, o: opt.Outcome, spec: Spec, cons: Constraints, prese
         tab["% w/v"] = tab["wv"].map(lambda w: " + ".join(f"{x:.3g}" for x in w))
         tab["worst margin / mN/m"] = (tab["worst_margin"] * 1e3).round(2)
         tab["provenance"] = tab["names"].map(lambda n: provenance(lib, n))
-        cols = ["#", "blend", "% w/v", "total_wv", "worst margin / mN/m", "provenance"]
+        tab["regulatory"] = tab["names"].map(lambda n: badges(n, flags))
+        cols = [
+            "#",
+            "blend",
+            "% w/v",
+            "total_wv",
+            "worst margin / mN/m",
+            "provenance",
+            "regulatory",
+        ]
         st.dataframe(tab[cols].rename(columns={"total_wv": "total % w/v"}), hide_index=True)
-    elif len(o.undetermined):
+    if len(o.undetermined):
         st.subheader("Undetermined, worth testing in the lab")
-        und = o.undetermined.head(10)
-        st.dataframe(und[["blend", "total_wv", "worst_margin"]], hide_index=True)
+        und = o.undetermined.head(10).copy()
+        und["% w/v"] = und["wv"].map(lambda w: " + ".join(f"{x:.3g}" for x in w))
+        und["pessimistic margin / mN/m"] = (und["worst_margin"] * 1e3).round(2)
+        und["regulatory"] = und["names"].map(lambda n: badges(n, flags))
+        st.dataframe(
+            und[["blend", "% w/v", "pessimistic margin / mN/m", "regulatory"]], hide_index=True
+        )
+    st.caption(o.regulatory_note)
 
     payload = opt.outcome_payload(o, spec, cons, preset)
     st.download_button(
@@ -328,14 +388,33 @@ def show(lib: pd.DataFrame, o: opt.Outcome, spec: Spec, cons: Constraints, prese
     )
 
 
-def main() -> None:
-    st.set_page_config(page_title="wetopt", layout="wide")
-    st.title("wetopt: fewest-surfactant spray adjuvant blends")
+def quality_panel(lib: pd.DataFrame, exclude: bool) -> None:
+    """Data-quality exclusions with their reasons (shown before and after a run)."""
+    qc = quality_table(lib)
+    bad = qc[qc["status"] == INCONSISTENT]
+    n_unchecked = int((qc["status"] == "unchecked").sum())
+    title = f"Data-quality exclusions: {len(bad)}" + ("" if exclude else " (toggle off: kept)")
+    with st.expander(title, expanded=bool(len(bad))):
+        if len(bad):
+            st.dataframe(
+                bad[["name", "reason"]].rename(columns={"name": "surfactant"}), hide_index=True
+            )
+        st.caption(
+            f"Inconsistent source data: the measured pC20 disagrees with the candidate's own CMC, "
+            f"γ_CMC and Γ_max by more than {config.QC_SIGMA_MULT:g}·σ_model. {n_unchecked} "
+            "candidates have no measured pC20 and are unchecked (kept)."
+        )
+
+
+def optimiser_page() -> None:
+    st.title("Optimiser")
+    st.caption("Fewest-surfactant blend that meets every band at mean ± z·σ, with a certificate.")
     lib = load_library(str(config.LIBRARY_PATH))
     parsed = sidebar(lib)
     if parsed is None:
         return
-    preset, spec, cons, qc = parsed
+    preset, spec, cons, qc, exhaustive = parsed
+    quality_panel(lib, qc)
     if st.button("Optimise", type="primary"):
         bar = st.progress(0.0, text="Starting…")
         o = opt.optimise(
@@ -344,18 +423,25 @@ def main() -> None:
             cons,
             exclude_inconsistent=qc,
             progress=lambda f, msg: bar.progress(min(f, 1.0), text=msg),
+            exhaustive=exhaustive,
+            time_limit_s=TIME_LIMIT_S,
         )
-        st.session_state["run"] = (o, spec, cons, qc, preset)
+        st.session_state["run"] = (o, spec, cons, (qc, exhaustive), preset)
     run = st.session_state.get("run")
     if run is None:
         st.info(f"{len(lib)} candidates loaded. Set the spec in the sidebar and press Optimise.")
         return
-    o, spec_run, cons_run, qc_run, preset_run = run
-    if (spec_run, cons_run, qc_run) != (spec, cons, qc):
+    o, spec_run, cons_run, opts_run, preset_run = run
+    if (spec_run, cons_run, opts_run) != (spec, cons, (qc, exhaustive)):
         st.warning(
             "The sidebar has changed since this result was computed. Press Optimise to update."
         )
     show(lib, o, spec_run, cons_run, preset_run)
+
+
+def main() -> None:
+    st.set_page_config(page_title="wetopt", layout="wide")
+    optimiser_page()
 
 
 if __name__ == "__main__":

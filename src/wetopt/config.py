@@ -1,8 +1,16 @@
 """Paths and modelling assumptions. Assumptions here are not data; data lives in data/."""
 
+import os
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+# Repo root holding data/, examples/ and docs/. From a source checkout (editable install) it is
+# two levels above this file. A non-editable install (`pip install .`, e.g. Streamlit Cloud) puts
+# this file in site-packages, so fall back to $WETOPT_ROOT (set by streamlit_app.py) or the cwd.
+_SRC_ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(
+    os.environ.get("WETOPT_ROOT")
+    or (_SRC_ROOT if (_SRC_ROOT / "pyproject.toml").exists() else Path.cwd())
+)
 SURFPRO_DIR = ROOT / "data" / "raw" / "surfpro" / "data"
 LIBRARY_PATH = ROOT / "data" / "library.parquet"
 
