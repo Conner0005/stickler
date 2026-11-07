@@ -17,7 +17,7 @@ def _render(page: str) -> None:
 def test_entrypoint_renders_home():
     at = AppTest.from_file(str(config.ROOT / "streamlit_app.py"), default_timeout=60).run()
     assert not at.exception
-    assert at.title[0].value == "wetopt"
+    assert any("The fewest surfactants that make your spray stick" in m.value for m in at.markdown)
 
 
 @pytest.mark.parametrize("page", PAGES)
@@ -34,4 +34,4 @@ def test_optimiser_default_answers():
     assert not at.exception
     outcome = at.session_state["run"]["o"]
     assert outcome.result is not None and outcome.result.k == 1
-    assert any("water alone" in el.value for el in at.success)
+    assert any("water alone" in m.value for m in at.markdown)

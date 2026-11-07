@@ -91,8 +91,9 @@ def test_form_line_and_custom_switch():
         "5. Preferences",
     ]
     assert at.sidebar.button[0].label == "Find recipe"
-    assert "What this means:** Wheat is hard to wet" in at.info[0].value
+    means = [m.value for m in at.markdown if "What this means" in m.value]
+    assert means and "Wheat is hard to wet → target DST ≤ 50 mN/m at 200 ms" in means[0]
     assert at.session_state["run"]["o"].result.k == 1  # default opens on the cereal result
     z = next(n for n in at.sidebar.number_input if n.label == "Robustness z")
     z.set_value(1.5).run()
-    assert "Custom targets" in at.info[0].value
+    assert any("Custom targets" in m.value for m in at.markdown)

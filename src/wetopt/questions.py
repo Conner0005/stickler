@@ -128,10 +128,10 @@ def to_scenario(a: Answers) -> Scenario:
     )
 
 
-def what_this_means(
+def what_this_means_parts(
     a: Answers, custom: bool, n_charge: int, n_regulatory: int, scn: Scenario | None = None
-) -> str:
-    """One line translating the answers into targets (or 'Custom targets' after manual edits)."""
+) -> list[str]:
+    """The translation of the answers into targets, one part per answer group."""
     if custom and scn is not None:
         bands = "; ".join(opt.band_label(b) for b in scn.wetting_target.bands)
         head = f"Custom targets (set in Advanced): {bands}, z = {scn.wetting_target.z:g}"
@@ -155,7 +155,14 @@ def what_this_means(
         else "No market selected → no regulatory screen"
     )
     conf = f"Confidence {CONFIDENCE[a.confidence][1].removeprefix('about ')}"
-    return " · ".join([head, ai, mk] + ([] if custom and scn is not None else [conf]))
+    return [head, ai, mk] + ([] if custom and scn is not None else [conf])
+
+
+def what_this_means(
+    a: Answers, custom: bool, n_charge: int, n_regulatory: int, scn: Scenario | None = None
+) -> str:
+    """One line translating the answers into targets (or 'Custom targets' after manual edits)."""
+    return " · ".join(what_this_means_parts(a, custom, n_charge, n_regulatory, scn))
 
 
 def relaxations(a: Answers) -> list[tuple[str, Answers]]:

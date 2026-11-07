@@ -17,7 +17,7 @@ import streamlit as st
 import yaml
 from pydantic import ValidationError
 
-from wetopt import config, regulatory
+from wetopt import calibrate, config, regulatory, ui
 from wetopt import optimise as opt
 from wetopt.physics import SurfactantArrays, gamma_water, monte_carlo_dst
 from wetopt.questions import (
@@ -31,7 +31,7 @@ from wetopt.questions import (
     Answers,
     suggest_relaxation,
     to_scenario,
-    what_this_means,
+    what_this_means_parts,
 )
 from wetopt.scenario import (
     AI_NOTE,
@@ -217,10 +217,10 @@ def questions() -> Answers:
     )
 
     sb.header("4. Where will it be sold?")
-    cols = sb.columns(4)
+    grid = [*sb.columns(2), *sb.columns(2)]
     markets = [
         m
-        for m, c in zip(get_args(Market), cols, strict=True)
+        for m, c in zip(get_args(Market), grid, strict=True)
         if _w(c.checkbox, m, f"q:mk:{m}", m in d.markets, help=TIPS["markets"])
     ]
     precautionary = _w(
@@ -558,6 +558,9 @@ def dst_figure(lib: pd.DataFrame, o: opt.Outcome, spec: Spec) -> go.Figure:
             )
         )
     fig.update_layout(
+        font={"family": "IBM Plex Sans, system-ui, sans-serif", "color": ui.INK},
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="#FFFFFF",
         hovermode="x unified",
         height=460,
         margin={"l": 10, "r": 10, "t": 30, "b": 10},
@@ -566,8 +569,15 @@ def dst_figure(lib: pd.DataFrame, o: opt.Outcome, spec: Spec) -> go.Figure:
             "title": "Surface age / ms",
             "type": "log",
             "tickvals": [10, 20, 50, 100, 200, 500, 1000],
+            "gridcolor": ui.BLOOM,
+            "linecolor": ui.BLOOM,
         },
-        yaxis={"title": "Dynamic surface tension / mN/m", "range": [y_min, g0 + 2]},
+        yaxis={
+            "title": "Dynamic surface tension / mN/m",
+            "range": [y_min, g0 + 2],
+            "gridcolor": ui.BLOOM,
+            "linecolor": ui.BLOOM,
+        },
     )
     return fig
 
@@ -612,53 +622,69 @@ def show(lib: pd.DataFrame, run: dict) -> None:
     o, scn = run["o"], run["scn"]
     spec, cons, r = scn.wetting_target, scn.constraints, o.result
     flags = regulatory_flags(lib, tuple(cons.markets))
-    with st.container(border=True):
-        if r is None:
-            st.subheader("No recipe meets the target")
-            relax = run.get("relax")
-            if run["custom"]:
-                st.write("These are custom targets: relax them in Advanced.")
-            elif relax:
-                label, relaxed, ro = relax
-                top = ro.feasible.iloc[0]
-                st.write(
-                    f"One change would work: **{label}** → {top['blend']} at "
-                    f"{top['total_wv']:.3g} % w/v."
-                )
-                st.button(
-                    f"Apply: {label}", type="primary", on_click=apply_answers, args=(relaxed,)
-                )
-            else:
-                st.write(
-                    "No single change (double the tank limit, lower stick level, one more "
-                    "ingredient, one market fewer) finds a recipe."
-                )
-        else:
-            top = o.feasible.iloc[0]
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Ingredients", r.k)
-            c2.metric("Adjuvant in the tank", f"{top['total_wv']:.3g} % w/v")
-            c3.metric("Safety margin", f"{min(r.margins) * 1e3:+.1f} mN/m")
-            comp = pd.DataFrame(
-                {
-                    "surfactant": top["names"],
-                    "% w/v": [round(w, 4) for w in top["wv"]],
-                    "g per litre": [round(w * 10, 3) for w in top["wv"]],
-                    "mM": [round(c, 3) for c in r.blend.root.values()],
-                    "regulatory": [
-                        reg_badges([n], flags, scn, lib).split(": ", 1)[1] for n in top["names"]
-                    ],
-                }
+    cal = run.get("cal")
+    if cal is not None:
+        demo = " (synthetic demo data)" if run.get("demo") else ""
+        ui.render(
+            ui.note(
+                f"Calibrated on {cal.n} measurements{demo}, not a pessimistic bound. "
+                f"RMSE {cal.rmse_before:.1f} → {cal.rmse_after:.1f} mN/m."
             )
-            st.dataframe(comp, hide_index=True)
-            details = [f"{n}: {t}" for n, ts in r.regulatory_flags.items() for t in ts]
-            if details:
-                with st.expander("Regulatory flags on the recipe"):
-                    for line in details:
-                        st.markdown(f"- {line}")
-        if o.truncated:
-            st.warning(o.truncated)
-        st.caption(o.regulatory_note)
+        )
+        st.write("")
+    if r is None:
+        relax = run.get("relax")
+        if run["custom"]:
+            body = "Your custom targets are out of reach. Relax them in Advanced."
+        elif relax:
+            label, relaxed, ro = relax
+            top = ro.feasible.iloc[0]
+            body = (
+                f"One change would work: {label.lower()}. That gives {top['blend']} at "
+                f"{top['total_wv']:.3g} % w/v."
+            )
+        else:
+            body = (
+                "No single change finds a recipe: not doubling the tank limit, a lower stick "
+                "level, one more ingredient or one market fewer."
+            )
+        ui.render(ui.empty_block("No recipe meets your target yet", body))
+        if relax and not run["custom"]:
+            st.write("")
+            st.button(
+                f"Apply: {relax[0]}", type="primary", on_click=apply_answers, args=(relax[1],)
+            )
+        ui.render(f'<p class="sk sk-credit">{ui.e(o.certificate_plain or o.certificate)}</p>')
+    else:
+        top = o.feasible.iloc[0]
+        ingredients = [
+            {
+                "name": n,
+                "wv": float(w),
+                "mm": float(c),
+                "flags": reg_badges([n], flags, scn, lib).split(": ", 1)[1],
+            }
+            for n, w, c in zip(top["names"], top["wv"], r.blend.root.values(), strict=True)
+        ]
+        figures = [
+            (str(r.k), "ingredient" if r.k == 1 else "ingredients"),
+            (
+                f"{top['total_wv']:.3g} % w/v",
+                f"adjuvant in the tank, {top['total_wv'] * 10:.3g} g/L",
+            ),
+            (f"{min(r.margins) * 1e3:+.1f} mN/m", "safety margin on your target"),
+        ]
+        ui.render(
+            ui.recipe_block(ingredients, figures, o.certificate_plain or o.certificate, o.certified)
+        )
+        details = [f"{n}: {t}" for n, ts in r.regulatory_flags.items() for t in ts]
+        if details:
+            with st.expander("Regulatory flags on the recipe"):
+                for line in details:
+                    st.markdown(f"- {line}")
+    if o.truncated:
+        st.warning(o.truncated)
+    st.caption(o.regulatory_note)
 
     with st.expander("What each input did"):
         st.markdown("\n".join(f"- {line}" for line in input_summary(scn, o, lib)))
@@ -673,7 +699,6 @@ def show(lib: pd.DataFrame, run: dict) -> None:
         "bound). Shading: ± σ (Monte Carlo ⊕ σ_model). Grey boxes: spec windows."
     )
 
-    (st.success if o.certified else st.warning)(o.certificate_plain or o.certificate)
     with st.expander("Full certificate"):
         st.write(o.certificate)
 
@@ -739,7 +764,7 @@ def quality_panel(lib: pd.DataFrame, exclude: bool) -> None:
     bad = qc[qc["status"] == INCONSISTENT]
     n_unchecked = int((qc["status"] == "unchecked").sum())
     title = f"Data-quality exclusions: {len(bad)}" + ("" if exclude else " (toggle off: kept)")
-    with st.expander(title, expanded=bool(len(bad))):
+    with st.expander(title, expanded=False):
         if len(bad):
             st.dataframe(
                 bad[["name", "reason"]].rename(columns={"name": "surfactant"}), hide_index=True
@@ -759,11 +784,59 @@ def regulatory_count(lib: pd.DataFrame, markets: tuple[str, ...], policy: str) -
     return sum(any(f.status in statuses for f in fl) for fl in flags.values())
 
 
+DEMO_CSV = config.ROOT / "examples" / "demo_measurements.csv"
+
+
+@st.cache_data
+def fit_calibration(csv_text: str, lib: pd.DataFrame) -> calibrate.Calibration | None:
+    return calibrate.fit(calibrate.read_measurements(csv_text), lib, sigma_model(lib))
+
+
+def calibration_panel(lib: pd.DataFrame) -> tuple[calibrate.Calibration | None, bool]:
+    """Sidebar expander: lab data (upload or synthetic demo) and the Calibrated switch.
+    Returns (calibration if switched on and fitted, whether the data are the synthetic demo)."""
+    with st.sidebar.expander("Improve predictions with your lab data"):
+        up = st.file_uploader(
+            "Measured DST (CSV)",
+            type="csv",
+            key="calib_upload",
+            help="Columns: "
+            + ", ".join(calibrate.COLUMNS)
+            + ". Leave surfactant_2 blank if unused.",
+        )
+        if st.button("Use demo data (synthetic)", key="calib_demo"):
+            st.session_state["calib_use_demo"] = True
+        demo = up is None and st.session_state.get("calib_use_demo", False)
+        text = (
+            up.getvalue().decode("utf-8", "replace")
+            if up is not None
+            else (DEMO_CSV.read_text() if demo else None)
+        )
+        on = st.checkbox("Calibrated", False, key="calib_on")
+        if text is None:
+            st.caption("Upload measurements or use the demo data, then tick Calibrated.")
+            return None, False
+        if demo:
+            st.warning("Synthetic demo data loaded: not real measurements.")
+        cal = fit_calibration(text, lib)
+        if cal is None:
+            st.error("No valid rows in the file.")
+            return None, demo
+        st.caption(
+            f"{cal.n} measurements used, {cal.skipped} rows skipped as invalid. "
+            f"RMSE {cal.rmse_before:.1f} → {cal.rmse_after:.1f} mN/m."
+        )
+    return (cal if on else None), demo
+
+
 def optimiser_page() -> None:
-    st.title("Find a recipe")
-    st.caption(
-        "Answer five questions; the tool finds the adjuvant recipe with the fewest ingredients "
-        "that makes the spray stick, and checks that nothing smaller would."
+    ui.inject()
+    ui.render(
+        ui.page_header(
+            "Find a recipe",
+            "Answer five questions in the sidebar. Stickler finds the adjuvant recipe with the "
+            "fewest ingredients that makes the spray stick, and checks that nothing smaller would.",
+        )
     )
     lib = load_library(str(config.LIBRARY_PATH))
     answers = questions()
@@ -772,10 +845,12 @@ def optimiser_page() -> None:
     if adv is None:
         return
     scn, custom, qc, exhaustive = adv
+    cal, demo = calibration_panel(lib)
     n_charge = len(compatibility_exclusions(lib, scn.active_ingredient))
     n_reg = regulatory_count(lib, tuple(scn.constraints.markets), scn.constraints.policy)
-    line = what_this_means(answers, custom, n_charge, n_reg, scn)
-    st.info(f"**What this means:** {line}")
+    parts = what_this_means_parts(answers, custom, n_charge, n_reg, scn)
+    line = " · ".join(parts)
+    ui.render(ui.means_block(parts, custom))
 
     autorun = st.session_state.pop("autorun", False) or "run" not in st.session_state
     if find or autorun:
@@ -787,6 +862,7 @@ def optimiser_page() -> None:
             exhaustive=exhaustive,
             time_limit_s=TIME_LIMIT_S,
             progress=lambda f, msg: bar.progress(min(f, 1.0), text=msg),
+            calibration=cal,
         )
         relax = None
         if o.result is None and not custom:
@@ -799,8 +875,10 @@ def optimiser_page() -> None:
                         exclude_inconsistent=qc,
                         exhaustive=False,
                         time_limit_s=RELAX_TIME_S,
+                        calibration=cal,
                     ),
                 )
+        bar.empty()
         st.session_state["run"] = {
             "o": o,
             "scn": scn,
@@ -809,13 +887,15 @@ def optimiser_page() -> None:
             "qc": qc,
             "exhaustive": exhaustive,
             "line": line,
+            "cal": cal,
+            "demo": demo,
             "relax": relax,
         }
     run = st.session_state["run"]
-    if (run["scn"], run["qc"], run["exhaustive"]) != (scn, qc, exhaustive):
+    if (run["scn"], run["qc"], run["exhaustive"], run.get("cal")) != (scn, qc, exhaustive, cal):
         st.warning("Your answers have changed since this result. Press **Find recipe** to update.")
-    quality_panel(lib, qc)
     show(lib, run)
+    quality_panel(lib, qc)
 
 
 def main() -> None:

@@ -1,10 +1,21 @@
 [theme]
 base = "light"
-primaryColor = "#2a78d6"
-backgroundColor = "#fcfcfb"
-secondaryBackgroundColor = "#f3f2ee"
-textColor = "#0b0b0b"
-font = "sans serif"
+primaryColor = "#2E6A4C"
+backgroundColor = "#F5F7F4"
+secondaryBackgroundColor = "#EAF0EB"
+textColor = "#12261E"
+linkColor = "#2E6A4C"
+borderColor = "#DDE6DF"
+showWidgetBorder = true
+baseRadius = "10px"
+buttonRadius = "full"
+font = "IBM Plex Sans:https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+headingFont = "Bricolage Grotesque:https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600..800&display=swap"
+headingFontWeights = 750
+
+[theme.sidebar]
+backgroundColor = "#EDF2EE"
+secondaryBackgroundColor = "#FFFFFF"
 
 [client]
 toolbarMode = "viewer"

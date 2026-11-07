@@ -70,6 +70,7 @@ class Problem:
         True  # Monte Carlo every grid blend below max_k (needed for k − 1 ≥ 1 certificates)
     )
     deadline: float | None = None  # time.perf_counter() value after which the search stops
+    calibration: object | None = None  # calibrate.Calibration: GP-corrected DST (an estimate)
 
 
 def make_problem(
@@ -191,6 +192,8 @@ def mc_eval(p: Problem, idx: np.ndarray, wv: np.ndarray) -> tuple[DSTStats, np.n
             )
         )
     stats = DSTStats(*(np.concatenate(a) for a in zip(*parts, strict=True)))
+    if p.calibration is not None:
+        stats = p.calibration.apply(p.ages, wv, stats)
     return stats, *band_margins(p, *stats)
 
 
@@ -471,6 +474,7 @@ def optimise(
     exhaustive: bool = True,
     time_limit_s: float | None = None,
     extra_excluded: pd.DataFrame | None = None,
+    calibration: object | None = None,
 ) -> Outcome:
     """Find the fewest-surfactant feasible blend, then the lowest loading; certify k − 1.
 
@@ -503,7 +507,7 @@ def optimise(
     drop = frozenset(excluded["name"]) | frozenset(blocked["name"])
     p, cands = make_problem(lib, spec, cons, sigma_model, n_draws, drop)
     deadline = None if time_limit_s is None else t0 + time_limit_s
-    p = dataclasses.replace(p, exhaustive=exhaustive, deadline=deadline)
+    p = dataclasses.replace(p, exhaustive=exhaustive, deadline=deadline, calibration=calibration)
     levels: list[Level] = []
     winner_level = None
     truncated = ""
